@@ -1,0 +1,20 @@
+# Environments
+.env
+.venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Data & Models (Heavy files)
+data/raw/*
+data/interim/*
+data/processed/*
+data/external/*
+models/checkpoints/*
+models/registry/*
+
+# OS generated files
+.DS_Store
+Thumbs.db
