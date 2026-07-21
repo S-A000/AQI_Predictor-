@@ -1,0 +1,519 @@
+{
+  "generated_at": "2026-07-21T18:10:40.293471+00:00",
+  "dataset_path": "..\\data\\training\\training_dataset.parquet",
+  "shape": {
+    "rows": 105054,
+    "columns": 31
+  },
+  "dataset_summary": {
+    "shape": {
+      "rows": 105054,
+      "columns": 31
+    },
+    "memory_mb": 57.92,
+    "dtypes": {
+      "city": "object",
+      "country": "object",
+      "latitude": "float64",
+      "longitude": "float64",
+      "timestamp": "datetime64[ns, UTC]",
+      "temperature": "float64",
+      "feels_like": "float64",
+      "humidity": "int64",
+      "pressure": "int64",
+      "visibility": "int64",
+      "wind_speed": "float64",
+      "wind_degree": "int64",
+      "cloudiness": "int64",
+      "aqi": "int64",
+      "dominant_pollutant": "object",
+      "station_id": "int64",
+      "pm25": "float64",
+      "pm10": "float64",
+      "no2": "float64",
+      "so2": "float64",
+      "co": "float64",
+      "o3": "float64",
+      "source": "object",
+      "created_at": "object",
+      "hour": "float64",
+      "day": "float64",
+      "month": "float64",
+      "day_of_week": "float64",
+      "is_weekend": "float64",
+      "aqi_change_rate": "float64",
+      "aqi_rolling_mean_3h": "float64"
+    },
+    "columns": [
+      "city",
+      "country",
+      "latitude",
+      "longitude",
+      "timestamp",
+      "temperature",
+      "feels_like",
+      "humidity",
+      "pressure",
+      "visibility",
+      "wind_speed",
+      "wind_degree",
+      "cloudiness",
+      "aqi",
+      "dominant_pollutant",
+      "station_id",
+      "pm25",
+      "pm10",
+      "no2",
+      "so2",
+      "co",
+      "o3",
+      "source",
+      "created_at",
+      "hour",
+      "day",
+      "month",
+      "day_of_week",
+      "is_weekend",
+      "aqi_change_rate",
+      "aqi_rolling_mean_3h"
+    ]
+  },
+  "missing_values": {},
+  "total_missing_pct": 0.0,
+  "feature_cardinality": {
+    "timestamp": {
+      "unique": 35022,
+      "unique_pct": 33.34
+    },
+    "co": {
+      "unique": 5510,
+      "unique_pct": 5.24
+    },
+    "no2": {
+      "unique": 1941,
+      "unique_pct": 1.85
+    },
+    "pm10": {
+      "unique": 1347,
+      "unique_pct": 1.28
+    },
+    "pm25": {
+      "unique": 1154,
+      "unique_pct": 1.1
+    },
+    "so2": {
+      "unique": 1006,
+      "unique_pct": 0.96
+    },
+    "aqi_rolling_mean_3h": {
+      "unique": 941,
+      "unique_pct": 0.9
+    },
+    "feels_like": {
+      "unique": 490,
+      "unique_pct": 0.47
+    },
+    "temperature": {
+      "unique": 447,
+      "unique_pct": 0.43
+    },
+    "wind_speed": {
+      "unique": 426,
+      "unique_pct": 0.41
+    },
+    "o3": {
+      "unique": 403,
+      "unique_pct": 0.38
+    },
+    "aqi": {
+      "unique": 365,
+      "unique_pct": 0.35
+    },
+    "wind_degree": {
+      "unique": 360,
+      "unique_pct": 0.34
+    },
+    "created_at": {
+      "unique": 356,
+      "unique_pct": 0.34
+    },
+    "aqi_change_rate": {
+      "unique": 110,
+      "unique_pct": 0.1
+    },
+    "cloudiness": {
+      "unique": 101,
+      "unique_pct": 0.1
+    },
+    "humidity": {
+      "unique": 96,
+      "unique_pct": 0.09
+    },
+    "pressure": {
+      "unique": 91,
+      "unique_pct": 0.09
+    },
+    "day": {
+      "unique": 31,
+      "unique_pct": 0.03
+    },
+    "hour": {
+      "unique": 24,
+      "unique_pct": 0.02
+    },
+    "month": {
+      "unique": 12,
+      "unique_pct": 0.01
+    },
+    "day_of_week": {
+      "unique": 7,
+      "unique_pct": 0.01
+    },
+    "dominant_pollutant": {
+      "unique": 7,
+      "unique_pct": 0.01
+    },
+    "latitude": {
+      "unique": 5,
+      "unique_pct": 0.0
+    },
+    "longitude": {
+      "unique": 5,
+      "unique_pct": 0.0
+    },
+    "station_id": {
+      "unique": 4,
+      "unique_pct": 0.0
+    },
+    "city": {
+      "unique": 3,
+      "unique_pct": 0.0
+    },
+    "source": {
+      "unique": 2,
+      "unique_pct": 0.0
+    },
+    "visibility": {
+      "unique": 2,
+      "unique_pct": 0.0
+    },
+    "is_weekend": {
+      "unique": 2,
+      "unique_pct": 0.0
+    },
+    "country": {
+      "unique": 1,
+      "unique_pct": 0.0
+    }
+  },
+  "quality_summary": {
+    "total_rows": 105054,
+    "total_columns": 31,
+    "duplicate_rows": 0,
+    "duplicate_pct": 0.0,
+    "missing_cells": 0,
+    "missing_cells_pct": 0.0,
+    "columns_with_missing": 0,
+    "columns_fully_present": 31,
+    "numeric_columns": 25,
+    "categorical_columns": 5,
+    "datetime_columns": 0
+  },
+  "aqi_correlations": {
+    "pm25": 0.7443,
+    "pm10": 0.6056,
+    "co": 0.5219,
+    "so2": 0.4455,
+    "no2": 0.3789,
+    "wind_speed": -0.3736,
+    "temperature": -0.2721,
+    "feels_like": -0.2681,
+    "o3": 0.1112,
+    "cloudiness": -0.0729,
+    "pressure": -0.0523,
+    "humidity": 0.0301,
+    "visibility": -0.0003
+  },
+  "avg_pollutants_by_city": {
+    "Islamabad": {
+      "pm25": 38.26,
+      "pm10": 55.61,
+      "no2": 41.73,
+      "so2": 12.56,
+      "co": 1015.94,
+      "o3": 74.69
+    },
+    "Karachi": {
+      "pm25": 30.65,
+      "pm10": 63.17,
+      "no2": 21.22,
+      "so2": 15.97,
+      "co": 497.83,
+      "o3": 74.76
+    },
+    "Lahore": {
+      "pm25": 70.29,
+      "pm10": 105.19,
+      "no2": 43.15,
+      "so2": 17.88,
+      "co": 1429.89,
+      "o3": 87.77
+    }
+  },
+  "per_city_stats": {
+    "Islamabad": {
+      "mean": 110.97,
+      "median": 106.0,
+      "std": 33.09,
+      "min": 0,
+      "max": 218,
+      "count": 35018
+    },
+    "Karachi": {
+      "mean": 91.78,
+      "median": 83.0,
+      "std": 32.03,
+      "min": 0,
+      "max": 297,
+      "count": 35018
+    },
+    "Lahore": {
+      "mean": 152.13,
+      "median": 153.0,
+      "std": 50.04,
+      "min": 0,
+      "max": 538,
+      "count": 35018
+    }
+  },
+  "monthly_aqi_trends": {
+    "1": {
+      "mean": 160.23,
+      "median": 153.0,
+      "std": 54.73
+    },
+    "2": {
+      "mean": 122.61,
+      "median": 116.0,
+      "std": 37.45
+    },
+    "3": {
+      "mean": 104.04,
+      "median": 95.0,
+      "std": 33.43
+    },
+    "4": {
+      "mean": 91.66,
+      "median": 84.0,
+      "std": 27.68
+    },
+    "5": {
+      "mean": 103.59,
+      "median": 91.0,
+      "std": 43.14
+    },
+    "6": {
+      "mean": 111.71,
+      "median": 100.0,
+      "std": 40.01
+    },
+    "7": {
+      "mean": 107.84,
+      "median": 104.0,
+      "std": 49.21
+    },
+    "8": {
+      "mean": 103.69,
+      "median": 98.0,
+      "std": 39.07
+    },
+    "9": {
+      "mean": 110.75,
+      "median": 104.0,
+      "std": 37.1
+    },
+    "10": {
+      "mean": 117.56,
+      "median": 107.0,
+      "std": 41.7
+    },
+    "11": {
+      "mean": 139.07,
+      "median": 139.0,
+      "std": 44.82
+    },
+    "12": {
+      "mean": 146.32,
+      "median": 150.0,
+      "std": 51.29
+    }
+  },
+  "hourly_aqi_trends": {
+    "0": {
+      "mean": 114.75,
+      "median": 103.0,
+      "std": 45.58
+    },
+    "1": {
+      "mean": 114.58,
+      "median": 103.0,
+      "std": 45.51
+    },
+    "2": {
+      "mean": 114.55,
+      "median": 103.0,
+      "std": 45.51
+    },
+    "3": {
+      "mean": 114.54,
+      "median": 103.0,
+      "std": 45.52
+    },
+    "4": {
+      "mean": 114.52,
+      "median": 103.0,
+      "std": 45.55
+    },
+    "5": {
+      "mean": 114.59,
+      "median": 103.0,
+      "std": 45.48
+    },
+    "6": {
+      "mean": 114.57,
+      "median": 103.0,
+      "std": 45.47
+    },
+    "7": {
+      "mean": 114.56,
+      "median": 103.0,
+      "std": 45.49
+    },
+    "8": {
+      "mean": 114.55,
+      "median": 103.0,
+      "std": 45.49
+    },
+    "9": {
+      "mean": 114.53,
+      "median": 103.0,
+      "std": 45.49
+    },
+    "10": {
+      "mean": 114.52,
+      "median": 103.0,
+      "std": 45.47
+    },
+    "11": {
+      "mean": 114.54,
+      "median": 103.0,
+      "std": 45.46
+    },
+    "12": {
+      "mean": 114.59,
+      "median": 104.0,
+      "std": 45.45
+    },
+    "13": {
+      "mean": 115.03,
+      "median": 104.0,
+      "std": 45.41
+    },
+    "14": {
+      "mean": 116.51,
+      "median": 107.0,
+      "std": 45.43
+    },
+    "15": {
+      "mean": 119.35,
+      "median": 112.0,
+      "std": 45.95
+    },
+    "16": {
+      "mean": 123.95,
+      "median": 119.0,
+      "std": 47.31
+    },
+    "17": {
+      "mean": 129.26,
+      "median": 126.0,
+      "std": 48.92
+    },
+    "18": {
+      "mean": 132.66,
+      "median": 131.0,
+      "std": 49.69
+    },
+    "19": {
+      "mean": 131.97,
+      "median": 131.0,
+      "std": 49.38
+    },
+    "20": {
+      "mean": 127.02,
+      "median": 123.0,
+      "std": 48.06
+    },
+    "21": {
+      "mean": 121.05,
+      "median": 114.0,
+      "std": 46.78
+    },
+    "22": {
+      "mean": 117.26,
+      "median": 107.0,
+      "std": 46.04
+    },
+    "23": {
+      "mean": 115.5,
+      "median": 104.0,
+      "std": 45.65
+    }
+  },
+  "weekday_aqi_trends": {
+    "0": {
+      "mean": 118.92,
+      "median": 108.0,
+      "std": 45.17
+    },
+    "1": {
+      "mean": 118.33,
+      "median": 109.0,
+      "std": 45.05
+    },
+    "2": {
+      "mean": 117.81,
+      "median": 108.0,
+      "std": 45.43
+    },
+    "3": {
+      "mean": 116.67,
+      "median": 106.0,
+      "std": 48.28
+    },
+    "4": {
+      "mean": 118.36,
+      "median": 107.0,
+      "std": 49.64
+    },
+    "5": {
+      "mean": 118.98,
+      "median": 109.0,
+      "std": 47.45
+    },
+    "6": {
+      "mean": 118.96,
+      "median": 111.0,
+      "std": 45.2
+    }
+  },
+  "dominant_pollutant_counts": {
+    "pm25": 92275,
+    "o3": 10980,
+    "unknown": 1023,
+    "pm10": 735,
+    "no2": 24,
+    "so2": 15,
+    "co": 2
+  }
+}

@@ -179,7 +179,22 @@ class StorageManager:
 
         ]
 
-        return pd.DataFrame(rows)
+        dataframe = pd.DataFrame(rows)
+
+        # ----------------------------------------
+        # Convert timestamps to datetime
+        # ----------------------------------------
+        dataframe["timestamp"] = pd.to_datetime(
+            dataframe["timestamp"],
+            utc=True,
+        )
+
+        dataframe["created_at"] = pd.to_datetime(
+            dataframe["created_at"],
+            utc=True,
+        )
+
+        return dataframe
 
     def _resolve_path(
         self,

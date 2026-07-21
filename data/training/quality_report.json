@@ -1,0 +1,24 @@
+{
+  "row_count": 105054,
+  "duplicate_count": 0,
+  "missing_value_counts": {
+    "pm25": 1023,
+    "pm10": 1023,
+    "no2": 1023,
+    "so2": 1023,
+    "co": 1023,
+    "o3": 1023
+  },
+  "missing_value_pct": {
+    "pm25": 0.97,
+    "pm10": 0.97,
+    "no2": 0.97,
+    "so2": 0.97,
+    "co": 0.97,
+    "o3": 0.97
+  },
+  "timestamp_gap_count": 0,
+  "timestamp_gaps": [],
+  "issues": [],
+  "is_clean": true
+}

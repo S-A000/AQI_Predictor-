@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Air Quality ML Platform — Data Pipeline Architecture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.min.js"></script>
+<style>
+  :root{
+    --paper:#FAF9F6;
+    --paper-line: rgba(20,33,61,0.05);
+    --ink:#14213D;
+    --ink-soft:#5B667D;
+    --card:#FFFFFF;
+    --card-border: rgba(20,33,61,0.09);
+
+    --blue-fill:#DCEEFB; --blue-line:#1E5A8E; --blue-text:#0B3D5C;
+    --orange-fill:#FDEBD0; --orange-line:#B8620A; --orange-text:#7A3E00;
+    --purple-fill:#EAE0F8; --purple-line:#5E3B8A; --purple-text:#3B1F5C;
+    --green-fill:#D9F5E3; --green-line:#1F7A45; --green-text:#12492A;
+    --rose-fill:#FBDCE1; --rose-line:#A32638; --rose-text:#6B1420;
+  }
+
+  *{ box-sizing:border-box; }
+
+  body{
+    margin:0;
+    min-height:100vh;
+    background:
+      linear-gradient(var(--paper-line) 1px, transparent 1px) 0 0/100% 42px,
+      var(--paper);
+    color:var(--ink);
+    font-family:'Inter', sans-serif;
+    padding: 48px 24px 64px;
+  }
+
+  .deck{
+    max-width: 1180px;
+    margin: 0 auto;
+  }
+
+  /* ---------- Header ---------- */
+  .kicker{
+    font-family:'JetBrains Mono', monospace;
+    font-size:11px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    display:flex;
+    align-items:center;
+    gap:10px;
+    margin-bottom: 14px;
+  }
+  .kicker::before{
+    content:"";
+    width:22px; height:1px;
+    background: var(--ink-soft);
+    display:inline-block;
+  }
+
+  h1{
+    font-family:'Space Grotesk', sans-serif;
+    font-weight:700;
+    font-size: clamp(28px, 4vw, 42px);
+    letter-spacing:-0.01em;
+    margin: 0 0 10px;
+    color: var(--ink);
+  }
+  h1 span{ color: var(--blue-line); }
+
+  .subtitle{
+    max-width: 640px;
+    font-size: 15px;
+    line-height:1.6;
+    color: var(--ink-soft);
+    margin: 0 0 34px;
+  }
+
+  /* ---------- Diagram Card ---------- */
+  .stage{
+    position: relative;
+  }
+
+  .card{
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 20px;
+    box-shadow: 0 1px 2px rgba(20,33,61,0.04), 0 24px 48px -24px rgba(20,33,61,0.18);
+    overflow: hidden;
+  }
+
+  .card-toolbar{
+    display:flex;
+    align-items:center;
+    justify-content: space-between;
+    padding: 16px 22px;
+    border-bottom: 1px solid var(--card-border);
+  }
+
+  .file-label{
+    font-family:'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--ink-soft);
+    display:flex; align-items:center; gap:8px;
+  }
+  .file-label .dots{ display:flex; gap:5px; }
+  .file-label .dots i{
+    width:8px; height:8px; border-radius:50%;
+    display:inline-block; background: #E4E1D9;
+  }
+
+  .zoom-controls{ display:flex; align-items:center; gap:6px; }
+  .zoom-controls button{
+    width: 28px; height: 28px;
+    border-radius: 8px;
+    border: 1px solid var(--card-border);
+    background: var(--paper);
+    color: var(--ink);
+    font-family:'JetBrains Mono', monospace;
+    font-size: 14px;
+    cursor:pointer;
+    display:flex; align-items:center; justify-content:center;
+    transition: all 0.15s ease;
+  }
+  .zoom-controls button:hover{ border-color: var(--blue-line); color: var(--blue-line); }
+  .zoom-pct{
+    font-family:'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--ink-soft);
+    width: 42px;
+    text-align:center;
+  }
+
+  .diagram-viewport{
+    overflow: auto;
+    padding: 36px 28px;
+    background:
+      radial-gradient(circle at 1px 1px, rgba(20,33,61,0.055) 1px, transparent 0) 0 0/22px 22px;
+  }
+
+  .diagram-canvas{
+    transform-origin: top left;
+    transition: transform 0.18s ease;
+    width: fit-content;
+  }
+
+  .mermaid{ font-family: 'Inter', sans-serif !important; }
+
+  /* ---------- Legend ---------- */
+  .legend{
+    margin-top: 22px;
+    display:flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .chip{
+    display:flex;
+    align-items:center;
+    gap:9px;
+    padding: 9px 14px;
+    border-radius: 999px;
+    border: 1px solid;
+    font-size: 12.5px;
+    font-weight: 500;
+  }
+  .chip .swatch{
+    width:9px; height:9px;
+    border-radius:2px;
+    flex-shrink:0;
+  }
+  .chip.blue{ background: var(--blue-fill); border-color: rgba(30,90,142,0.25); color: var(--blue-text); }
+  .chip.blue .swatch{ background: var(--blue-line); }
+  .chip.orange{ background: var(--orange-fill); border-color: rgba(184,98,10,0.25); color: var(--orange-text); }
+  .chip.orange .swatch{ background: var(--orange-line); }
+  .chip.purple{ background: var(--purple-fill); border-color: rgba(94,59,138,0.25); color: var(--purple-text); }
+  .chip.purple .swatch{ background: var(--purple-line); }
+  .chip.green{ background: var(--green-fill); border-color: rgba(31,122,69,0.25); color: var(--green-text); }
+  .chip.green .swatch{ background: var(--green-line); }
+  .chip.rose{ background: var(--rose-fill); border-color: rgba(163,38,56,0.25); color: var(--rose-text); }
+  .chip.rose .swatch{ background: var(--rose-line); }
+
+  /* ---------- Footer ---------- */
+  .slide-footer{
+    margin-top: 28px;
+    display:flex;
+    align-items:center;
+    justify-content: space-between;
+    font-family:'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--ink-soft);
+    opacity: 0.75;
+  }
+  .slide-footer .line{
+    flex:1;
+    height:1px;
+    background: var(--paper-line);
+    margin: 0 16px;
+  }
+
+  @media (max-width: 640px){
+    .card-toolbar{ flex-wrap: wrap; gap: 10px; }
+  }
+</style>
+</head>
+<body>
+
+  <div class="deck">
+    <div class="kicker">System Architecture · Data Pipeline</div>
+    <h1>Air Quality <span>ML Platform</span></h1>
+    <p class="subtitle">
+      Two ingestion paths, live and historical, run in parallel through validation
+      and cleaning before converging into a single canonical schema — feature
+      engineered, registered in Feast, and served both offline for training and
+      online for real-time prediction.
+    </p>
+
+    <div class="stage">
+      <div class="card">
+        <div class="card-toolbar">
+          <div class="file-label">
+            <span class="dots"><i></i><i></i><i></i></span>
+            pipeline_architecture.mmd
+          </div>
+          <div class="zoom-controls">
+            <button id="zoomOut" aria-label="Zoom out">−</button>
+            <span class="zoom-pct" id="zoomPct">100%</span>
+            <button id="zoomIn" aria-label="Zoom in">+</button>
+            <button id="zoomReset" aria-label="Reset zoom">⟲</button>
+          </div>
+        </div>
+        <div class="diagram-viewport" id="viewport">
+          <div class="diagram-canvas" id="canvas">
+            <pre class="mermaid" id="mermaidSrc">
+%%{init: {"flowchart": {"curve": "basis", "htmlLabels": true, "nodeSpacing": 34, "rankSpacing": 52}, "theme": "base", "themeVariables": {"fontFamily": "Inter, sans-serif", "fontSize": "14px", "primaryColor": "#ffffff", "primaryTextColor": "#14213D", "primaryBorderColor": "#c9cfdb", "lineColor": "#9aa5b8", "tertiaryColor": "#ffffff"} } }%%
+flowchart TD
+
+    orchestrator(["run_pipeline.py&lt;br/&gt;Async Orchestrator"]):::ingestion
+
+    subgraph ING["🌐 INGESTION LAYER"]
+        direction LR
+        subgraph LIVE["Live / Real-Time Path"]
+            direction TB
+            aqi(["AQICN API&lt;br/&gt;aqi_client.py"]):::ingestion
+            weather(["OpenWeather API&lt;br/&gt;weather_client.py"]):::ingestion
+        end
+        subgraph HIST["Historical Ingestion Path"]
+            direction TB
+            openmeteo(["Open-Meteo API&lt;br/&gt;historical_client.py"]):::ingestion
+        end
+    end
+
+    orchestrator ==> aqi
+    orchestrator ==> weather
+    orchestrator ==> openmeteo
+
+    subgraph VAL["✅ VALIDATION &amp; PROCESSING LAYER"]
+        direction LR
+        subgraph VALLIVE["Live"]
+            direction TB
+            validator{{"validator.py&lt;br/&gt;Pydantic Validation&lt;br/&gt;WeatherResponse / AQIResponse"}}:::processing
+            merger(["FeatureMerger.merge()&lt;br/&gt;Canonical Conversion"]):::processing
+        end
+        subgraph VALHIST["Historical"]
+            direction TB
+            bulk(["Bulk Array Processing&lt;br/&gt;(No Row Validation)"]):::processing
+            construct(["Construct MergedFeature&lt;br/&gt;Directly"]):::processing
+        end
+    end
+
+    aqi ==>|"Raw JSON"| validator
+    weather ==>|"Raw JSON"| validator
+    validator --> merger
+    openmeteo ==>|"Bulk Hourly Arrays"| bulk
+    bulk --> construct
+
+    canonical[/"MergedFeature (Canonical)&lt;br/&gt;Single Schema for Entire Platform"/]:::processing
+    merger ==> canonical
+    construct ==> canonical
+
+    subgraph CLEAN["Cleaning"]
+        direction LR
+        liveclean(["handle_missing_values()&lt;br/&gt;drop_duplicates()"]):::processing
+        histclean["Historical&lt;br/&gt;(Already Clean)"]:::processing
+    end
+
+    canonical ==> liveclean
+    canonical ==> histclean
+
+    cleanbatch[("Clean Canonical&lt;br/&gt;Feature Batch")]:::storage
+    liveclean --> cleanbatch
+    histclean --> cleanbatch
+
+    subgraph FE["🧬 FEATURE ENGINEERING LAYER"]
+        direction LR
+        storagemgr(["StorageManager&lt;br/&gt;storage.py"]):::storage
+        subgraph FILES["Persisted Files"]
+            direction TB
+            json[("JSON Files")]:::storage
+            csv[("CSV Files")]:::storage
+            parquet[("Parquet Files")]:::storage
+        end
+        engineer(["engineer_features()&lt;br/&gt;feature_engineering.py"]):::storage
+        timefeat["Time Feature Extraction:&lt;br/&gt;hour · day · month · weekday · weekend"]:::storage
+        aqifeat["AQI Feature Engineering:&lt;br/&gt;rolling_mean_3h · aqi_change_rate"]:::storage
+        readyparquet[("Engineered Parquet Dataset&lt;br/&gt;Feast-Ready DataFrame")]:::storage
+    end
+
+    cleanbatch ==> storagemgr
+    cleanbatch ==> engineer
+    storagemgr --> json
+    storagemgr --> csv
+    storagemgr --> parquet
+    engineer --> timefeat
+    engineer --> aqifeat
+    timefeat --> readyparquet
+    aqifeat --> readyparquet
+
+    subgraph FEAST["🍃 FEAST FEATURE STORE"]
+        direction TB
+        subgraph REG["Registration"]
+            direction LR
+            featuredefs(["feature_definitions.py&lt;br/&gt;Entity + FeatureView"]):::feast
+            applyfeast["feast apply&lt;br/&gt;Register Metadata"]:::feast
+            registry[("registry.db&lt;br/&gt;Metadata Registry")]:::feast
+        end
+        offline[("Offline Store&lt;br/&gt;Parquet Feature Files")]:::feast
+        subgraph MATERIALIZE["Materialization"]
+            direction LR
+            matfull["feast materialize()&lt;br/&gt;Historical Backfill"]:::feast
+            matinc["feast materialize-incremental()&lt;br/&gt;Hourly Live Updates"]:::feast
+        end
+        online[("Online Store&lt;br/&gt;SQLite / Redis")]:::feast
+    end
+
+    readyparquet ==> featuredefs
+    readyparquet ==> applyfeast
+    readyparquet ==> registry
+    featuredefs --> offline
+    applyfeast --> offline
+    registry --> offline
+    offline ==> matfull
+    offline ==> matinc
+    matfull --> online
+    matinc --> online
+
+    subgraph MLSERVE["🚀 ML &amp; SERVING LAYER"]
+        direction LR
+        subgraph TRAIN["Training Pipeline"]
+            direction TB
+            gethist(["get_historical_features()&lt;br/&gt;Point-in-Time Correct Join"]):::ml
+            dataset[("ML Training Dataset")]:::ml
+            model(["Model Training"]):::ml
+        end
+        subgraph SERVE["Real-Time Serving"]
+            direction TB
+            getonline(["get_online_features()&lt;br/&gt;Latest Cached Features"]):::ml
+            fastapi(["FastAPI Prediction API"]):::ml
+            dashboard["Dashboard / Client"]:::ml
+        end
+    end
+
+    offline ==> gethist
+    online ==> getonline
+    gethist --> dataset --> model
+    getonline --> fastapi --> dashboard
+
+    classDef ingestion fill:#DCEEFB,stroke:#1E5A8E,stroke-width:1.5px,color:#0B3D5C;
+    classDef processing fill:#FDEBD0,stroke:#B8620A,stroke-width:1.5px,color:#7A3E00;
+    classDef storage fill:#EAE0F8,stroke:#5E3B8A,stroke-width:1.5px,color:#3B1F5C;
+    classDef feast fill:#D9F5E3,stroke:#1F7A45,stroke-width:1.5px,color:#12492A;
+    classDef ml fill:#FBDCE1,stroke:#A32638,stroke-width:1.5px,color:#6B1420;
+
+    style ING fill:#F5FAFF,stroke:#1E5A8E,stroke-width:1.2px,color:#0B3D5C
+    style VAL fill:#FFF8EE,stroke:#B8620A,stroke-width:1.2px,color:#7A3E00
+    style FE fill:#F8F4FD,stroke:#5E3B8A,stroke-width:1.2px,color:#3B1F5C
+    style FEAST fill:#F1FBF5,stroke:#1F7A45,stroke-width:1.2px,color:#12492A
+    style MLSERVE fill:#FDF2F4,stroke:#A32638,stroke-width:1.2px,color:#6B1420
+    style LIVE fill:none,stroke:#8fb8d8,stroke-dasharray: 3 3
+    style HIST fill:none,stroke:#8fb8d8,stroke-dasharray: 3 3
+    style VALLIVE fill:none,stroke:#e0b579,stroke-dasharray: 3 3
+    style VALHIST fill:none,stroke:#e0b579,stroke-dasharray: 3 3
+    style TRAIN fill:none,stroke:#e39aa8,stroke-dasharray: 3 3
+    style SERVE fill:none,stroke:#e39aa8,stroke-dasharray: 3 3
+    style CLEAN fill:none,stroke:#e0b579,stroke-dasharray: 3 3
+    style FILES fill:none,stroke:#c3a9e0,stroke-dasharray: 3 3
+    style REG fill:none,stroke:#8fd6ab,stroke-dasharray: 3 3
+    style MATERIALIZE fill:none,stroke:#8fd6ab,stroke-dasharray: 3 3
+            </pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="legend">
+        <div class="chip blue"><span class="swatch"></span>Ingestion Layer</div>
+        <div class="chip orange"><span class="swatch"></span>Validation &amp; Processing</div>
+        <div class="chip purple"><span class="swatch"></span>Feature Engineering &amp; Storage</div>
+        <div class="chip green"><span class="swatch"></span>Feast Feature Store</div>
+        <div class="chip rose"><span class="swatch"></span>ML &amp; Serving</div>
+      </div>
+    </div>
+
+    <div class="slide-footer">
+      <span>AQ-ML-PLATFORM</span>
+      <span class="line"></span>
+      <span>Data Pipeline · Architecture Overview</span>
+    </div>
+  </div>
+
+<script>
+  mermaid.initialize({ startOnLoad: true, securityLevel: 'loose' });
+
+  let scale = 1;
+  const canvas = document.getElementById('canvas');
+  const pctLabel = document.getElementById('zoomPct');
+
+  function applyScale(){
+    canvas.style.transform = 'scale(' + scale + ')';
+    pctLabel.textContent = Math.round(scale * 100) + '%';
+  }
+
+  document.getElementById('zoomIn').addEventListener('click', () => {
+    scale = Math.min(scale + 0.1, 2);
+    applyScale();
+  });
+  document.getElementById('zoomOut').addEventListener('click', () => {
+    scale = Math.max(scale - 0.1, 0.4);
+    applyScale();
+  });
+  document.getElementById('zoomReset').addEventListener('click', () => {
+    scale = 1;
+    applyScale();
+  });
+</script>
+
+</body>
+</html>

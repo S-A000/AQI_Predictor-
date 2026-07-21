@@ -1,0 +1,11 @@
+project: aqi_forecasting_mlops
+
+registry: data/registry.db
+
+provider: local
+
+online_store:
+  type: sqlite
+  path: data/online_store.db
+
+entity_key_serialization_version: 2

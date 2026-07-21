@@ -1,0 +1,130 @@
+
+J
+,
+__dummy"
+__dummy_idJaqi_forecasting_mlops
+½âäÒ°ÊÎY½âäÒ°ÊÎY
+y
+[
+city6City for which AQI and weather features are collected."cityJaqi_forecasting_mlops
+½âäÒ°ÊÎY½âäÒ°ÊÎY1"$2ee574a3-75ad-43dd-bf74-d49e73eab04a* ÄıÒ˜é‚Ñ2†
+„
+aqi_featuresaqi_forecasting_mlopscity"
+country"
+latitude"
+	longitude"
+temperature"
+
+feels_like"
+humidity"
+pressure"
+
+visibility"
+
+wind_speed"
+wind_degree"
+
+cloudiness"
+aqi"
+dominant_pollutant"
+
+station_id"
+pm25"
+pm10"
+no2"
+so2"
+co"
+o3"
+hour"
+day"	
+month"
+day_of_week"
+
+is_weekend"
+aqi_change_rate"
+aqi_rolling_mean_3h2€ç„:¾	timestampZIGD:\10Pearls\aqi-forecasting-mlops\data\feast_ready\aqi_features.parquetŠ1feast.infra.offline_stores.file_source.FileSource¢aqi_weather_source’ÿ½ıÒ€¤şO"ÿ½ıÒ€¤şO@b
+city’latest}
+½âäÒ°ÊÎY ÄıÒğ¼¦Ğ
+õ…àÃĞ°ÀŞìäÒ
+ŞìäÒŞìäÒ
+€±‘Ò½…ïÒ
+€®â–ÿ”ÜÊ
+€•ÜÊÿ€Ó0Rœ
+™
+,feast.infra.online_stores.sqlite.SqliteTable"i
+CD:\10Pearls\aqi-forecasting-mlops\feature_repo\data\online_store.db"aqi_forecasting_mlops_aqi_featuresbÖ	timestampZIGD:\10Pearls\aqi-forecasting-mlops\data\feast_ready\aqi_features.parquetŠ1feast.infra.offline_stores.file_source.FileSource¢aqi_weather_sourceªaqi_forecasting_mlops’½âäÒØÜÌ"ÖøîÒÒçvŠ5
+
+aqi_forecasting_mlops
+½âäÒÈ¿‰½âäÒÈ¿‰’Ü
+œ
+aqi_featuresaqi_forecasting_mlops"feature_view*³
+”
+aqi_featuresaqi_forecasting_mlopscity"
+country"
+latitude"
+	longitude"
+temperature"
+
+feels_like"
+humidity"
+pressure"
+
+visibility"
+
+wind_speed"
+wind_degree"
+
+cloudiness"
+aqi"
+dominant_pollutant"
+
+station_id"
+pm25"
+pm10"
+no2"
+so2"
+co"
+o32€ç„:»	timestampZFDD:\10Pearls\aqi-forecasting-mlops\data\processed\v1\features.parquetŠ1feast.infra.offline_stores.file_source.FileSource¢aqi_weather_source’½âäÒØÜÌ"½âäÒ£§Y@b
+city’latest
+½âäÒ°ÊÎY½âäÒ°ÊÎY2½âäÒğĞ´ZB$22ab3d14-3aaa-4283-87f9-a94a46ac5cc9
+º
+aqi_featuresaqi_forecasting_mlops"feature_view*Ï
+„
+aqi_featuresaqi_forecasting_mlopscity"
+country"
+latitude"
+	longitude"
+temperature"
+
+feels_like"
+humidity"
+pressure"
+
+visibility"
+
+wind_speed"
+wind_degree"
+
+cloudiness"
+aqi"
+dominant_pollutant"
+
+station_id"
+pm25"
+pm10"
+no2"
+so2"
+co"
+o3"
+hour"
+day"	
+month"
+day_of_week"
+
+is_weekend"
+aqi_change_rate"
+aqi_rolling_mean_3h2€ç„:¾	timestampZIGD:\10Pearls\aqi-forecasting-mlops\data\feast_ready\aqi_features.parquetŠ1feast.infra.offline_stores.file_source.FileSource¢aqi_weather_source’½âäÒØÜÌ"ÖøîÒÒçv@b
+city’latestF
+½âäÒ°ÊÎYÖøîÒÒçv
+õ…àÃĞ°ÀŞìäÒ
+ŞìäÒŞìäÒ 2ÖøîÒÀİÉ}B$572b6bff-a98f-4449-8194-3f915a4ee086

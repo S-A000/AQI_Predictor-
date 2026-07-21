@@ -100,15 +100,12 @@ class Settings(BaseSettings):
 
     app_env: Environment = Field(default=Environment.DEV, alias="APP_ENV")
 
-    # Hardcoded default values to bypass any potential loading or .env issues
-    aqicn_api_key: SecretStr = Field(
-        default=SecretStr("d363237813c3d74694f42b1729657237a3fcc3ea"),
-        alias="AQICN_API_KEY"
-    )
-    openweather_api_key: SecretStr = Field(
-        default=SecretStr("d363237813c3d74694f42b1729657237a3fcc3ea"),
-        alias="OPENWEATHER_API_KEY"
-    )
+    # API keys are loaded exclusively from the environment / .env file /
+    # YAML config sources (see `settings_customise_sources`). There are no
+    # hardcoded defaults — if a key isn't provided by one of those sources,
+    # Settings() construction will fail validation with a clear error.
+    aqicn_api_key: SecretStr = Field(alias="AQICN_API_KEY")
+    openweather_api_key: SecretStr = Field(alias="OPENWEATHER_API_KEY")
 
     project: ProjectConfig = Field(default_factory=ProjectConfig)
     location: LocationConfig
@@ -146,15 +143,6 @@ class Settings(BaseSettings):
                 path.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
                 raise ConfigurationError(f"Directory creation failed for {path}: {exc}") from exc
-
-    # Forcefully returning the raw string token directly to avoid SecretStr masking issues
-    @property
-    def aqicn_api_key_revealed(self) -> str:
-        return "d363237813c3d74694f42b1729657237a3fcc3ea"
-
-    @property
-    def openweather_api_key_revealed(self) -> str:
-        return "d363237813c3d74694f42b1729657237a3fcc3ea"
 
     @property
     def is_production(self) -> bool:

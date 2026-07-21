@@ -1,0 +1,114 @@
+{
+  "generated_at": "2026-07-21T14:09:01.422790+00:00",
+  "row_count": 105054,
+  "city_counts": {
+    "Islamabad": 35018,
+    "Karachi": 35018,
+    "Lahore": 35018
+  },
+  "date_range": {
+    "start": "2022-07-21T00:00:00+00:00",
+    "end": "2026-07-18T23:00:00+00:00"
+  },
+  "numeric_summary": {
+    "temperature": {
+      "mean": 23.924,
+      "min": 1.1,
+      "max": 46.5,
+      "std": 7.571
+    },
+    "feels_like": {
+      "mean": 25.184,
+      "min": -2.6,
+      "max": 47.6,
+      "std": 9.646
+    },
+    "humidity": {
+      "mean": 63.557,
+      "min": 5.0,
+      "max": 100.0,
+      "std": 21.486
+    },
+    "pressure": {
+      "mean": 980.129,
+      "min": 934.0,
+      "max": 1024.0,
+      "std": 24.509
+    },
+    "wind_speed": {
+      "mean": 9.435,
+      "min": 0.0,
+      "max": 46.6,
+      "std": 6.227
+    },
+    "cloudiness": {
+      "mean": 32.411,
+      "min": 0.0,
+      "max": 100.0,
+      "std": 39.96
+    },
+    "aqi": {
+      "mean": 118.29,
+      "min": 0.0,
+      "max": 538.0,
+      "std": 46.642
+    },
+    "pm25": {
+      "mean": 46.401,
+      "min": 0.4,
+      "max": 448.9,
+      "std": 37.052
+    },
+    "pm10": {
+      "mean": 74.658,
+      "min": 0.0,
+      "max": 890.3,
+      "std": 55.151
+    },
+    "no2": {
+      "mean": 35.366,
+      "min": 0.0,
+      "max": 317.7,
+      "std": 33.049
+    },
+    "so2": {
+      "mean": 15.469,
+      "min": 0.0,
+      "max": 260.1,
+      "std": 11.976
+    },
+    "co": {
+      "mean": 981.22,
+      "min": 0.0,
+      "max": 12926.0,
+      "std": 1034.07
+    },
+    "o3": {
+      "mean": 79.076,
+      "min": -11.0,
+      "max": 680.0,
+      "std": 57.824
+    },
+    "aqi_change_rate": {
+      "mean": 0.003,
+      "min": -123.0,
+      "max": 134.0,
+      "std": 5.818
+    },
+    "aqi_rolling_mean_3h": {
+      "mean": 118.287,
+      "min": 0.0,
+      "max": 535.333,
+      "std": 46.433
+    }
+  },
+  "dominant_pollutant_distribution": {
+    "pm25": 92275,
+    "o3": 10980,
+    "unknown": 1023,
+    "pm10": 735,
+    "no2": 24,
+    "so2": 15,
+    "co": 2
+  }
+}

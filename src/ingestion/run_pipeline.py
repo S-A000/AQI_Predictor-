@@ -60,6 +60,7 @@ import argparse
 import asyncio
 import inspect
 import json
+import os
 import signal
 import sys
 import time
@@ -68,6 +69,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, ClassVar, Protocol
+from src.feature_pipeline.feature_engineering import engineer_features
+from src.feature_pipeline.feast_writer import write_to_feast_source
 
 from pydantic import BaseModel, ConfigDict
 
@@ -134,6 +137,47 @@ class AQIClient(Protocol):
     async def fetch(self, city: str) -> dict: ...
 
 
+def _resolve_api_key(
+    *,
+    api_key: str | None,
+    settings_secret: Any,
+    env_var_names: tuple[str, ...],
+    provider_label: str,
+) -> str:
+    """
+    Resolve a raw string API key using a strict precedence order:
+
+        1. Explicit `api_key` constructor argument.
+        2. `settings.<key>` (a pydantic `SecretStr`), unwrapped via
+           `get_secret_value()`.
+        3. Environment variable fallback (checked in the given order).
+
+    Always returns a plain `str` — never a `SecretStr` — since HTTP
+    clients need the raw token to build request params/headers.
+
+    Raises `ValueError` with a descriptive message if no key can be
+    resolved from any source.
+    """
+    if api_key:
+        return api_key
+
+    if settings_secret is not None:
+        value = settings_secret.get_secret_value()
+        if value:
+            return value
+
+    for env_var in env_var_names:
+        value = os.getenv(env_var)
+        if value:
+            return value
+
+    env_var_hint = env_var_names[0]
+    raise ValueError(
+        f"{provider_label} API key is missing. "
+        f"Please set {env_var_hint} in the environment or .env file."
+    )
+
+
 class OpenWeatherClient:
     """Default OpenWeatherMap client. Swap out if you use a different provider."""
 
@@ -142,7 +186,12 @@ class OpenWeatherClient:
     def __init__(self, api_key: str | None = None, timeout: float = 10.0):
         import httpx
 
-        self.api_key = api_key or getattr(settings, "openweather_api_key", None)
+        self.api_key: str = _resolve_api_key(
+            api_key=api_key,
+            settings_secret=getattr(settings, "openweather_api_key", None),
+            env_var_names=("OPENWEATHER_API_KEY",),
+            provider_label="OpenWeather",
+        )
         self._client = httpx.AsyncClient(timeout=timeout)
 
     async def fetch(self, city: str) -> dict:
@@ -164,14 +213,12 @@ class AQICNClient:
 
     def __init__(self, api_key: str | None = None, timeout: float = 10.0):
         import httpx
-        import os  # <-- OS module import kiya
 
-        # Pehle check karein direct parameter, phir settings, aur fallback mein directly env variables
-        self.api_key = (
-            api_key 
-            or getattr(settings, "aqicn_api_key", None) 
-            or os.getenv("AQICN_API_KEY")
-            or os.getenv("WAQI_API_TOKEN")
+        self.api_key: str = _resolve_api_key(
+            api_key=api_key,
+            settings_secret=getattr(settings, "aqicn_api_key", None),
+            env_var_names=("AQICN_API_KEY", "WAQI_API_TOKEN"),
+            provider_label="AQICN",
         )
         self._client = httpx.AsyncClient(timeout=timeout)
 
@@ -714,6 +761,12 @@ class Pipeline:
             summary.version = batch_result["version"]
 
             self.storage_manager.cleanup_old_versions(keep_last=self.keep_versions)
+
+            # NEW: feature engineering + Feast-ready write. Runs for
+            # both full (weather+AQI) and AQI-only feature batches
+            # since AQIOnlyFeature is also a plain pydantic model.
+            engineered_df = engineer_features(features)
+            write_to_feast_source(engineered_df)
 
             if self.upload_to_feature_store:
                 try:
