@@ -14,6 +14,9 @@ data/processed/*
 data/external/*
 models/checkpoints/*
 models/registry/*
+data/
+models/
+*.parquet
 
 # OS generated files
 .DS_Store
