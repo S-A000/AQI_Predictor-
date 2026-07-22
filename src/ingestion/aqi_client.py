@@ -46,7 +46,7 @@ class AQIClient:
         # =====================================================================
         # Hum settings ke dynamic objects par rely karne ke bajaye directly aapka
         # verified token raw format mein use kar rahe hain taake Pydantic bypass ho jaye.
-        token = "d363237813c3d74694f42b1729657237a3fcc3ea"
+        token = ""
 
         params = {
             "token": token,  # No SecretStr masking here, it is a pure raw string!

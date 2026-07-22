@@ -1,0 +1,486 @@
+{
+  "generated_at": "2026-07-21T20:52:32.336238+00:00",
+  "dataset_path": "..\\data\\training\\training_dataset.parquet",
+  "shape": {
+    "rows": 105054,
+    "columns": 275
+  },
+  "config": {
+    "horizon": 24,
+    "sequence": 168
+  },
+  "lag_feature_analysis": {
+    "total_created": 95,
+    "top_15": {
+      "aqi_lag_3": 0.5792,
+      "aqi_lag_6": 0.46,
+      "aqi_lag_72": 0.4325,
+      "pm25_lag_3": 0.4103,
+      "aqi_lag_24": 0.3512,
+      "pm25_lag_72": 0.3427,
+      "pm25_lag_6": 0.3241,
+      "aqi_lag_12": 0.3182,
+      "pm10_lag_3": 0.3182,
+      "co_lag_3": 0.3154,
+      "so2_lag_72": 0.3137,
+      "so2_lag_3": 0.3116,
+      "aqi_lag_48": 0.2958,
+      "so2_lag_6": 0.2875,
+      "so2_lag_12": 0.2816
+    }
+  },
+  "rolling_window_analysis": {
+    "total_created": 140,
+    "top_15": {
+      "aqi_rollmean_6": 0.723,
+      "aqi_rollmean_12": 0.6921,
+      "aqi_rollmean_24": 0.6624,
+      "aqi_rollmean_48": 0.6345,
+      "aqi_rollmean_168": 0.5918,
+      "pm25_rollmean_48": 0.5605,
+      "pm25_rollmean_168": 0.5443,
+      "pm25_rollmean_24": 0.5341,
+      "pm25_rollmean_6": 0.5266,
+      "pm25_rollstd_168": 0.5255,
+      "pm25_rollstd_48": 0.5202,
+      "pm25_rollmean_12": 0.5177,
+      "pm25_rollstd_24": 0.4801,
+      "aqi_rollstd_6": 0.4709,
+      "aqi_rollstd_12": 0.46
+    }
+  },
+  "target_leakage_detection": {
+    "high_corr_features": {
+      "aqi_rolling_mean_3h": 0.9935
+    },
+    "same_timestamp_pollutant_leak": {},
+    "risk_score": 1
+  },
+  "future_target_correlation": {
+    "t+1": {
+      "aqi": 0.2264,
+      "pm25": 0.1211,
+      "pm10": 0.0511,
+      "no2": 0.151,
+      "so2": 0.1695,
+      "co": 0.1615,
+      "o3": -0.0809,
+      "temperature": -0.2553,
+      "feels_like": -0.2701,
+      "humidity": -0.036,
+      "pressure": -0.03,
+      "visibility": 0.0064,
+      "wind_speed": -0.0633,
+      "cloudiness": -0.0457
+    },
+    "t+3": {
+      "aqi": 0.5792,
+      "pm25": 0.4103,
+      "pm10": 0.3182,
+      "no2": 0.2411,
+      "so2": 0.3116,
+      "co": 0.3154,
+      "o3": 0.0361,
+      "temperature": -0.2486,
+      "feels_like": -0.2568,
+      "humidity": -0.0176,
+      "pressure": -0.0222,
+      "visibility": 0.0014,
+      "wind_speed": -0.2048,
+      "cloudiness": -0.0605
+    },
+    "t+6": {
+      "aqi": 0.46,
+      "pm25": 0.3241,
+      "pm10": 0.2505,
+      "no2": 0.1735,
+      "so2": 0.2875,
+      "co": 0.2457,
+      "o3": 0.037,
+      "temperature": -0.2156,
+      "feels_like": -0.2283,
+      "humidity": -0.0277,
+      "pressure": 0.0493,
+      "visibility": 0.0002,
+      "wind_speed": -0.1166,
+      "cloudiness": -0.0539
+    },
+    "t+12": {
+      "aqi": 0.3182,
+      "pm25": 0.2321,
+      "pm10": 0.1863,
+      "no2": 0.0744,
+      "so2": 0.2816,
+      "co": 0.1425,
+      "o3": 0.0521,
+      "temperature": -0.1488,
+      "feels_like": -0.164,
+      "humidity": -0.0316,
+      "pressure": 0.2152,
+      "visibility": 0.0006,
+      "wind_speed": 0.0212,
+      "cloudiness": -0.0525
+    },
+    "t+24": {
+      "aqi": 0.3512,
+      "pm25": 0.2784,
+      "pm10": 0.1999,
+      "no2": 0.1914,
+      "so2": 0.245,
+      "co": 0.2553,
+      "o3": -0.0175,
+      "temperature": -0.2683,
+      "feels_like": -0.2732,
+      "humidity": -0.031,
+      "pressure": -0.0686,
+      "visibility": NaN,
+      "wind_speed": -0.1768,
+      "cloudiness": -0.0632
+    }
+  },
+  "vif_analysis": {
+    "features_tested": 14,
+    "vif_gt_10": [
+      "temperature",
+      "feels_like",
+      "humidity"
+    ],
+    "vif_gt_5": [
+      "temperature",
+      "feels_like",
+      "humidity",
+      "pm25",
+      "no2"
+    ],
+    "scores": [
+      {
+        "feature": "temperature",
+        "vif": 154.89
+      },
+      {
+        "feature": "feels_like",
+        "vif": 137.9
+      },
+      {
+        "feature": "humidity",
+        "vif": 10.31
+      },
+      {
+        "feature": "pm25",
+        "vif": 8.71
+      },
+      {
+        "feature": "no2",
+        "vif": 5.41
+      },
+      {
+        "feature": "co",
+        "vif": 4.02
+      },
+      {
+        "feature": "o3",
+        "vif": 3.95
+      },
+      {
+        "feature": "pm10",
+        "vif": 3.87
+      },
+      {
+        "feature": "aqi",
+        "vif": 2.82
+      },
+      {
+        "feature": "wind_speed",
+        "vif": 2.51
+      },
+      {
+        "feature": "so2",
+        "vif": 2.29
+      },
+      {
+        "feature": "pressure",
+        "vif": 1.58
+      },
+      {
+        "feature": "cloudiness",
+        "vif": 1.11
+      },
+      {
+        "feature": "visibility",
+        "vif": 1.01
+      }
+    ]
+  },
+  "train_val_test_split": {
+    "train": {
+      "n": 73537,
+      "pct": 70.0,
+      "start": "2022-07-21 00:00:00+00:00",
+      "end": "2025-05-07 08:00:00+00:00"
+    },
+    "val": {
+      "n": 15758,
+      "pct": 15.0,
+      "start": "2025-05-07 08:00:00+00:00",
+      "end": "2025-12-12 04:00:00+00:00"
+    },
+    "test": {
+      "n": 15759,
+      "pct": 15.0,
+      "start": "2025-12-12 05:00:00+00:00",
+      "end": "2026-07-18 23:00:00+00:00"
+    },
+    "overlap": {
+      "train_val": true,
+      "val_test": false
+    }
+  },
+  "chronological_validation": {
+    "strictly_chronological": true,
+    "negative_diffs": 0,
+    "duplicate_timestamps": 70032,
+    "expected_interval_min": 0
+  },
+  "target_distribution": {
+    "overall": {
+      "mean": 118.29,
+      "std": 46.64
+    },
+    "train": {
+      "mean": 118.01,
+      "std": 47.41
+    },
+    "val": {
+      "mean": 118.29,
+      "std": 41.24
+    },
+    "test": {
+      "mean": 119.62,
+      "std": 48.06
+    },
+    "ks_tests": {
+      "train_val": {
+        "stat": 0.0738,
+        "p": 0.0
+      },
+      "val_test": {
+        "stat": 0.0615,
+        "p": 0.0
+      },
+      "train_test": {
+        "stat": 0.0447,
+        "p": 0.0
+      }
+    }
+  },
+  "missing_future_target": {
+    "t+1": {
+      "missing": 1,
+      "missing_pct": 0.0,
+      "usable": 105053
+    },
+    "t+3": {
+      "missing": 3,
+      "missing_pct": 0.0,
+      "usable": 105051
+    },
+    "t+6": {
+      "missing": 6,
+      "missing_pct": 0.01,
+      "usable": 105048
+    },
+    "t+12": {
+      "missing": 12,
+      "missing_pct": 0.01,
+      "usable": 105042
+    },
+    "t+24": {
+      "missing": 24,
+      "missing_pct": 0.02,
+      "usable": 105030
+    }
+  },
+  "feature_stability": {
+    "cv_by_feature": {
+      "aqi": 0.0275,
+      "pm25": 0.0717,
+      "pm10": 0.075,
+      "no2": 0.13,
+      "so2": 0.2445,
+      "co": 0.1484,
+      "o3": 0.021,
+      "temperature": 0.02,
+      "feels_like": 0.0284,
+      "humidity": 0.0199,
+      "pressure": 0.0005,
+      "visibility": 2.3068,
+      "wind_speed": 0.1494,
+      "cloudiness": 0.0543
+    },
+    "unstable_cv_gt_0_2": [
+      "so2",
+      "visibility"
+    ]
+  },
+  "data_drift": {
+    "tested": 14,
+    "drifted_count": 13,
+    "drifted_features": [
+      "aqi",
+      "pm25",
+      "pm10",
+      "no2",
+      "so2",
+      "co",
+      "o3",
+      "temperature",
+      "feels_like",
+      "humidity",
+      "pressure",
+      "wind_speed",
+      "cloudiness"
+    ],
+    "details": {
+      "aqi": {
+        "ks": 0.0447,
+        "p": 0.0,
+        "drift": "True"
+      },
+      "pm25": {
+        "ks": 0.0414,
+        "p": 0.0,
+        "drift": "True"
+      },
+      "pm10": {
+        "ks": 0.1025,
+        "p": 0.0,
+        "drift": "True"
+      },
+      "no2": {
+        "ks": 0.0565,
+        "p": 0.0,
+        "drift": "True"
+      },
+      "so2": {
+        "ks": 0.0756,
+        "p": 0.0,
+        "drift": "True"
+      },
+      "co": {
+        "ks": 0.0151,
+        "p": 0.0053,
+        "drift": "True"
+      },
+      "o3": {
+        "ks": 0.0543,
+        "p": 0.0,
+        "drift": "True"
+      },
+      "temperature": {
+        "ks": 0.0589,
+        "p": 0.0,
+        "drift": "True"
+      },
+      "feels_like": {
+        "ks": 0.0535,
+        "p": 0.0,
+        "drift": "True"
+      },
+      "humidity": {
+        "ks": 0.0754,
+        "p": 0.0,
+        "drift": "True"
+      },
+      "pressure": {
+        "ks": 0.0174,
+        "p": 0.0008,
+        "drift": "True"
+      },
+      "visibility": {
+        "ks": 0.0004,
+        "p": 1.0,
+        "drift": "False"
+      },
+      "wind_speed": {
+        "ks": 0.1083,
+        "p": 0.0,
+        "drift": "True"
+      },
+      "cloudiness": {
+        "ks": 0.0996,
+        "p": 0.0,
+        "drift": "True"
+      }
+    }
+  },
+  "forecast_horizon_verification": {
+    "1h": {
+      "autocorr": 0.2264,
+      "predictability": "Low"
+    },
+    "3h": {
+      "autocorr": 0.5792,
+      "predictability": "Medium"
+    },
+    "6h": {
+      "autocorr": 0.46,
+      "predictability": "Medium"
+    },
+    "12h": {
+      "autocorr": 0.3182,
+      "predictability": "Low"
+    },
+    "24h": {
+      "autocorr": 0.3512,
+      "predictability": "Low"
+    }
+  },
+  "feature_availability": {
+    "total": 267,
+    "avg_availability": 100.0,
+    "below_95pct": {}
+  },
+  "sequence_length_verification": {
+    "sequence_length": 168,
+    "forecast_horizon": 24,
+    "total_sequences": 104863,
+    "per_city": {
+      "Islamabad": {
+        "records": 35018,
+        "sequences": 34827,
+        "lstm_ready": true,
+        "transformer_ready": true
+      },
+      "Lahore": {
+        "records": 35018,
+        "sequences": 34827,
+        "lstm_ready": true,
+        "transformer_ready": true
+      },
+      "Karachi": {
+        "records": 35018,
+        "sequences": 34827,
+        "lstm_ready": true,
+        "transformer_ready": true
+      }
+    },
+    "overall_lstm_ready": true,
+    "overall_transformer_ready": true
+  },
+  "forecasting_readiness_summary": {
+    "score": 81,
+    "max": 100,
+    "grade": "B",
+    "components": {
+      "data_quality": 20,
+      "feature_engineering": 20,
+      "no_leakage": 15,
+      "distribution": 8,
+      "stability": 15,
+      "drift": 3
+    },
+    "recommendations": [
+      "Address data drift between train/test"
+    ]
+  }
+}
