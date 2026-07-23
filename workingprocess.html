@@ -1,575 +1,867 @@
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AQI Forecasting MLOps Platform — Pipeline Architecture</title>
 <style>
-  :root{
-    --bg:#0a0e17; --bg-elev:#10141f; --bg-elev2:#141926;
-    --surface:rgba(255,255,255,.045); --surface-hover:rgba(255,255,255,.075);
-    --border:rgba(255,255,255,.09); --border-soft:rgba(255,255,255,.05);
-    --text:#eaf0fa; --text-dim:#8d97ac; --text-faint:#565f74;
-    --blue:#4c8dff; --blue-soft:rgba(76,141,255,.14);
-    --orange:#ffa53e; --orange-soft:rgba(255,165,62,.14);
-    --purple:#a78bfa; --purple-soft:rgba(167,139,250,.14);
-    --green:#34d399; --green-soft:rgba(52,211,153,.14);
-    --red:#fb7185; --red-soft:rgba(251,113,133,.14);
-    --grid:rgba(255,255,255,.035);
-    --shadow:0 20px 50px -20px rgba(0,0,0,.6);
-    --radius:18px;
+  :root {
+    --bg: #0b0f19;
+    --panel: #111827;
+    --panel-2: #0f172a;
+    --border: #1e293b;
+    --border-strong: #334155;
+    --text: #f3f4f6;
+    --text-muted: #94a3b8;
+    --accent: #38bdf8;
+    --accent-2: #c084fc;
+    --accent-3: #34d399;
+    --accent-4: #fbbf24;
+    --code-bg: #0f172a;
   }
-  html[data-theme="light"]{
-    --bg:#f3f5fa; --bg-elev:#ffffff; --bg-elev2:#f8f9fc;
-    --surface:rgba(255,255,255,.75); --surface-hover:rgba(255,255,255,.95);
-    --border:rgba(15,23,42,.09); --border-soft:rgba(15,23,42,.05);
-    --text:#0f1729; --text-dim:#5b6478; --text-faint:#9aa2b5;
-    --blue:#2563eb; --blue-soft:rgba(37,99,235,.09);
-    --orange:#c2680a; --orange-soft:rgba(194,104,10,.09);
-    --purple:#7c3aed; --purple-soft:rgba(124,58,237,.09);
-    --green:#059669; --green-soft:rgba(5,150,105,.09);
-    --red:#dc2626; --red-soft:rgba(220,38,38,.09);
-    --grid:rgba(15,23,42,.04);
-    --shadow:0 20px 50px -25px rgba(15,23,42,.25);
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.65;
   }
-  *{box-sizing:border-box;}
-  .aqi-root{
-    font-family:'Inter',-apple-system,sans-serif;
-    background:
-      radial-gradient(circle at 15% 0%, var(--blue-soft), transparent 40%),
-      radial-gradient(circle at 85% 15%, var(--red-soft), transparent 40%),
-      var(--bg);
-    color:var(--text);
-    min-height:100vh;
-    padding:0 0 80px 0;
-    position:relative;
-    overflow-x:hidden;
-    transition:background .4s ease,color .4s ease;
+  .wrap {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 48px 24px 100px;
   }
-  .aqi-root::before{
-    content:"";
-    position:absolute; inset:0;
-    background-image:
-      linear-gradient(var(--grid) 1px, transparent 1px),
-      linear-gradient(90deg, var(--grid) 1px, transparent 1px);
-    background-size:44px 44px;
-    pointer-events:none;
-    mask-image:linear-gradient(to bottom, black, transparent 85%);
+  h1 {
+    font-size: 28px;
+    font-weight: 700;
+    color: #fff;
+    margin: 0 0 8px;
   }
-  .mono{font-family:'JetBrains Mono',monospace;}
-  .display{font-family:'Space Grotesk',sans-serif;}
+  h2 {
+    font-size: 21px;
+    font-weight: 700;
+    color: var(--accent);
+    margin: 48px 0 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  h3 {
+    font-size: 17px;
+    font-weight: 600;
+    color: #e5e7eb;
+    margin: 28px 0 12px;
+  }
+  h4 {
+    font-size: 15px;
+    font-weight: 600;
+    color: #cbd5e1;
+    margin: 20px 0 10px;
+  }
+  p { color: var(--text); margin: 0 0 14px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: "SF Mono", Consolas, monospace;
+    font-size: 13px;
+    color: #fbbf24;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    overflow-x: auto;
+    font-family: "SF Mono", Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    color: #cbd5e1;
+  }
+  pre code { background: none; border: none; padding: 0; color: inherit; }
 
-  /* ---------- topbar ---------- */
-  .topbar{
-    position:sticky; top:0; z-index:40;
-    display:flex; align-items:center; justify-content:space-between;
-    padding:14px 32px;
-    background:color-mix(in srgb, var(--bg) 78%, transparent);
-    backdrop-filter:blur(16px) saturate(140%);
-    border-bottom:1px solid var(--border-soft);
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: rgba(56, 189, 248, 0.07);
+    padding: 12px 16px;
+    border-radius: 0 6px 6px 0;
+    margin: 18px 0;
+    font-size: 14px;
+    color: #d1d5db;
   }
-  .topbar-brand{display:flex; align-items:center; gap:10px;}
-  .topbar-dot{width:9px;height:9px;border-radius:50%;background:var(--green); box-shadow:0 0 0 4px var(--green-soft); animation:pulse 2.4s infinite;}
-  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
-  .topbar-brand span{font-size:13px; color:var(--text-dim); letter-spacing:.04em;}
-  .topbar-actions{display:flex; align-items:center; gap:10px;}
-  .icon-btn{
-    display:flex; align-items:center; gap:7px;
-    background:var(--surface); border:1px solid var(--border); color:var(--text);
-    padding:8px 13px; border-radius:11px; font-size:12.5px; cursor:pointer;
-    font-family:'Inter',sans-serif; font-weight:500;
-    transition:background .2s, transform .15s, border-color .2s;
+  .callout.important { border-left-color: var(--accent-4); background: rgba(251, 191, 36, 0.07); }
+  .callout.tip { border-left-color: var(--accent-3); background: rgba(52, 211, 153, 0.07); }
+  .callout-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    display: block;
+    margin-bottom: 4px;
+    color: var(--accent);
   }
-  .icon-btn:hover{background:var(--surface-hover); border-color:var(--border); transform:translateY(-1px);}
-  .icon-btn svg{width:15px;height:15px;}
+  .callout.important .callout-label { color: var(--accent-4); }
+  .callout.tip .callout-label { color: var(--accent-3); }
 
-  /* ---------- hero ---------- */
-  .hero{padding:64px 32px 40px; max-width:1180px; margin:0 auto; text-align:center; position:relative;}
-  .hero-eyebrow{
-    display:inline-flex; align-items:center; gap:8px;
-    font-size:11.5px; letter-spacing:.14em; text-transform:uppercase;
-    color:var(--text-dim); border:1px solid var(--border); background:var(--surface);
-    padding:6px 14px; border-radius:100px; margin-bottom:22px;
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0 24px;
+    font-size: 13.5px;
   }
-  .hero h1{
-    font-size:clamp(30px,4.4vw,50px); line-height:1.08; margin:0 0 14px; font-weight:600;
-    background:linear-gradient(180deg, var(--text), color-mix(in srgb, var(--text) 65%, transparent));
-    -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
+  th, td {
+    border: 1px solid var(--border);
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
   }
-  .hero p{font-size:16px; color:var(--text-dim); max-width:620px; margin:0 auto; line-height:1.6;}
-  .hero-stats{display:flex; flex-wrap:wrap; justify-content:center; gap:10px; margin-top:30px;}
-  .stat-pill{
-    font-size:12px; color:var(--text-dim); background:var(--surface); border:1px solid var(--border);
-    padding:7px 14px; border-radius:100px; display:flex; gap:7px; align-items:center;
+  th {
+    background: var(--panel);
+    color: var(--accent);
+    font-weight: 600;
+    white-space: nowrap;
   }
-  .stat-pill b{color:var(--text); font-weight:600;}
-  .stat-pill .dot{width:6px;height:6px;border-radius:50%;}
+  tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
 
-  /* ---------- canvas / zoom wrapper ---------- */
-  .canvas-wrap{max-width:1180px; margin:0 auto; padding:0 32px;}
-  .zoom-stage{transform-origin: top center; transition:transform .3s ease;}
-
-  /* ---------- timeline spine ---------- */
-  .pipeline{position:relative;}
-  .spine{
-    position:absolute; left:29px; top:26px; bottom:26px; width:2px;
-    background:linear-gradient(var(--blue), var(--orange), var(--purple), var(--green), var(--red));
-    opacity:.35;
-  }
-
-  /* ---------- layer ---------- */
-  .layer{position:relative; margin-bottom:0; padding-left:64px;}
-  .layer-header{
-    display:flex; align-items:flex-start; gap:16px; cursor:pointer; user-select:none;
-    padding:22px 0 14px;
-  }
-  .stage-badge{
-    position:absolute; left:0; top:22px; width:58px; height:58px; border-radius:16px;
-    display:flex; align-items:center; justify-content:center; flex-direction:column;
-    font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:19px;
-    border:1px solid var(--border); background:var(--bg-elev); z-index:2;
-    box-shadow:var(--shadow);
-  }
-  .stage-badge small{font-size:8px; font-weight:500; letter-spacing:.08em; opacity:.7; margin-top:1px; font-family:'JetBrains Mono',monospace;}
-  .layer-icon{
-    width:40px; height:40px; border-radius:11px; flex:none;
-    display:flex; align-items:center; justify-content:center; margin-top:2px;
-  }
-  .layer-icon svg{width:20px;height:20px;}
-  .layer-titles{flex:1; min-width:0;}
-  .layer-titles h2{font-size:19px; margin:0 0 4px; font-weight:600;}
-  .layer-titles p{font-size:13px; color:var(--text-dim); margin:0; max-width:640px; line-height:1.5;}
-  .layer-toggle{
-    width:30px; height:30px; border-radius:9px; border:1px solid var(--border); background:var(--surface);
-    display:flex; align-items:center; justify-content:center; flex:none; margin-top:4px;
-    transition:transform .3s ease, background .2s;
-  }
-  .layer.collapsed .layer-toggle{transform:rotate(-90deg);}
-  .layer-toggle svg{width:13px;height:13px;}
-
-  .cards-wrapper{display:grid; grid-template-rows:1fr; transition:grid-template-rows .35s ease;}
-  .layer.collapsed .cards-wrapper{grid-template-rows:0fr;}
-  .cards-inner{overflow:hidden; min-height:0;}
-  .cards-row{
-    display:grid; grid-template-columns:repeat(auto-fit,minmax(216px,1fr));
-    gap:14px; padding-bottom:26px;
+  .mermaid-container {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    margin: 20px 0;
+    overflow-x: auto;
   }
 
-  .card{
-    background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
-    padding:16px 16px 14px; backdrop-filter:blur(14px); cursor:pointer;
-    transition:transform .22s ease, border-color .22s, box-shadow .22s, background .22s;
-    position:relative; overflow:hidden;
-  }
-  .card::before{
-    content:""; position:absolute; inset:0; opacity:0; transition:opacity .25s;
-    background:radial-gradient(120px 80px at 20% 0%, var(--accent-soft), transparent 70%);
-  }
-  .card:hover{transform:translateY(-5px); background:var(--surface-hover); box-shadow:var(--shadow); border-color:var(--accent);}
-  .card:hover::before{opacity:1;}
-  .card-top{display:flex; align-items:center; gap:10px; margin-bottom:12px;}
-  .card-icon{
-    width:32px; height:32px; border-radius:9px; display:flex; align-items:center; justify-content:center; flex:none;
-    background:var(--accent-soft); color:var(--accent);
-  }
-  .card-icon svg{width:16px;height:16px;}
-  .card-top h3{font-size:13.5px; margin:0; font-weight:600; line-height:1.3;}
-  .card-file{font-size:10.5px; color:var(--text-faint); margin-top:8px;}
-  .card-badges{display:flex; flex-wrap:wrap; gap:5px; margin-top:11px;}
-  .badge{
-    font-size:9.5px; padding:3px 8px; border-radius:100px; color:var(--text-dim);
-    background:var(--bg-elev2); border:1px solid var(--border-soft); font-family:'JetBrains Mono',monospace;
+  .file-tree {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    font-family: "SF Mono", Consolas, monospace;
+    font-size: 13px;
+    color: #cbd5e1;
+    white-space: pre;
+    overflow-x: auto;
+    margin: 16px 0;
   }
 
-  /* ---------- flow strip between layers ---------- */
-  .flow-strip{position:relative; padding-left:64px; height:52px; display:flex; align-items:center;}
-  .flow-strip .flow-label{
-    font-size:10.5px; color:var(--text-faint); font-family:'JetBrains Mono',monospace;
-    white-space:nowrap; margin-right:14px;
+  .toc {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px 24px;
+    margin: 24px 0 40px;
   }
-  .flow-line{flex:1; height:2px; position:relative; border-radius:2px; overflow:hidden; background:var(--border-soft);}
-  .flow-line span{
-    position:absolute; top:0; bottom:0; width:36px; border-radius:2px;
-    background:linear-gradient(90deg, transparent, var(--fc), transparent);
-    animation:flow 2.6s linear infinite;
-  }
-  .flow-line span:nth-child(2){animation-delay:.9s;}
-  .flow-line span:nth-child(3){animation-delay:1.7s;}
-  @keyframes flow{0%{left:-40px} 100%{left:100%}}
-  .flow-chevron{
-    width:22px; height:22px; margin-left:10px; flex:none; color:var(--text-faint);
-    animation:bob 1.8s ease-in-out infinite;
-  }
-  @keyframes bob{0%,100%{transform:translateY(-2px)} 50%{transform:translateY(2px)}}
+  .toc-title { font-size: 12px; font-weight: 700; letter-spacing: 1px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 10px; }
+  .toc ol { margin: 0; padding-left: 20px; }
+  .toc li { margin-bottom: 6px; font-size: 14px; }
+  .toc a { color: #d1d5db; }
+  .toc a:hover { color: var(--accent); }
 
-  /* ---------- legend ---------- */
-  .legend{
-    position:fixed; left:22px; bottom:22px; z-index:35;
-    background:var(--bg-elev); border:1px solid var(--border); border-radius:14px;
-    padding:12px 14px; box-shadow:var(--shadow); backdrop-filter:blur(14px);
-    display:flex; flex-direction:column; gap:7px;
-  }
-  .legend-title{font-size:9.5px; text-transform:uppercase; letter-spacing:.1em; color:var(--text-faint); margin-bottom:2px;}
-  .legend-item{display:flex; align-items:center; gap:8px; font-size:11.5px; color:var(--text-dim); cursor:pointer; padding:2px 4px; border-radius:6px; transition:background .15s,color .15s;}
-  .legend-item:hover{background:var(--surface-hover); color:var(--text);}
-  .legend-swatch{width:9px;height:9px;border-radius:3px;}
+  .subtitle { color: var(--text-muted); font-size: 14px; margin-bottom: 32px; }
 
-  /* ---------- zoom controls ---------- */
-  .zoom-ctrl{
-    position:fixed; right:22px; bottom:22px; z-index:35;
-    background:var(--bg-elev); border:1px solid var(--border); border-radius:14px;
-    padding:6px; box-shadow:var(--shadow); backdrop-filter:blur(14px);
-    display:flex; align-items:center; gap:4px;
+  .stat-badge {
+    display: inline-block;
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--accent-3);
+    margin: 2px 4px 2px 0;
   }
-  .zoom-ctrl button{
-    width:30px; height:30px; border-radius:9px; border:none; background:transparent; color:var(--text);
-    cursor:pointer; font-size:15px; display:flex; align-items:center; justify-content:center;
-    transition:background .15s;
-  }
-  .zoom-ctrl button:hover{background:var(--surface-hover);}
-  .zoom-ctrl .zlabel{font-size:11px; color:var(--text-dim); width:40px; text-align:center; font-family:'JetBrains Mono',monospace;}
 
-  /* ---------- drawer ---------- */
-  .overlay{
-    position:fixed; inset:0; background:rgba(5,8,14,.5); backdrop-filter:blur(2px);
-    z-index:49; opacity:0; pointer-events:none; transition:opacity .3s ease;
-  }
-  .overlay.open{opacity:1; pointer-events:auto;}
-  .drawer{
-    position:fixed; top:0; right:0; height:100%; width:380px; max-width:88vw; z-index:50;
-    background:var(--bg-elev); border-left:1px solid var(--border);
-    transform:translateX(100%); transition:transform .35s cubic-bezier(.2,.9,.25,1);
-    padding:28px 26px; overflow-y:auto; box-shadow:-20px 0 60px -20px rgba(0,0,0,.5);
-  }
-  .drawer.open{transform:translateX(0);}
-  .drawer-close{
-    position:absolute; top:22px; right:22px; width:30px; height:30px; border-radius:9px;
-    border:1px solid var(--border); background:var(--surface); color:var(--text); cursor:pointer;
-    display:flex; align-items:center; justify-content:center;
-  }
-  .drawer-tag{
-    display:inline-flex; align-items:center; gap:6px; font-size:10.5px; text-transform:uppercase;
-    letter-spacing:.09em; padding:5px 11px; border-radius:100px; margin-bottom:16px; font-weight:600;
-  }
-  .drawer h3{font-size:21px; margin:0 0 6px; font-weight:600; padding-right:30px;}
-  .drawer .drawer-file{font-size:12px; color:var(--text-faint); margin-bottom:22px;}
-  .drawer-section{margin-bottom:20px;}
-  .drawer-section h4{font-size:10.5px; text-transform:uppercase; letter-spacing:.09em; color:var(--text-faint); margin:0 0 8px;}
-  .drawer-section p{font-size:13.5px; line-height:1.6; color:var(--text-dim); margin:0;}
-  .io-grid{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
-  .io-box{background:var(--bg-elev2); border:1px solid var(--border-soft); border-radius:10px; padding:10px 12px;}
-  .io-box span{font-size:9.5px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.08em; display:block; margin-bottom:4px;}
-  .io-box p{font-size:12px; color:var(--text); margin:0; line-height:1.4;}
-  .drawer .card-badges{margin-top:0;}
-
-  /* accent color assignment */
-  .c-blue{--accent:var(--blue); --accent-soft:var(--blue-soft); --fc:var(--blue);}
-  .c-orange{--accent:var(--orange); --accent-soft:var(--orange-soft); --fc:var(--orange);}
-  .c-purple{--accent:var(--purple); --accent-soft:var(--purple-soft); --fc:var(--purple);}
-  .c-green{--accent:var(--green); --accent-soft:var(--green-soft); --fc:var(--green);}
-  .c-red{--accent:var(--red); --accent-soft:var(--red-soft); --fc:var(--red);}
-  .stage-badge.c-blue,.card-icon.c-blue{color:var(--blue);}
-  .stage-badge.c-orange,.card-icon.c-orange{color:var(--orange);}
-  .stage-badge.c-purple,.card-icon.c-purple{color:var(--purple);}
-  .stage-badge.c-green,.card-icon.c-green{color:var(--green);}
-  .stage-badge.c-red,.card-icon.c-red{color:var(--red);}
-
-  @media print{
-    .topbar,.legend,.zoom-ctrl,.drawer,.overlay,.hero-eyebrow{display:none !important;}
-    .layer .cards-wrapper{grid-template-rows:1fr !important;}
-    .aqi-root{background:#fff; color:#111;}
-  }
-  @media (max-width:720px){
-    .layer,.flow-strip{padding-left:52px;}
-    .stage-badge{width:46px;height:46px;font-size:15px;left:0;top:20px;}
-    .spine{left:23px;}
-    .legend{left:12px; bottom:12px;}
-    .zoom-ctrl{right:12px; bottom:12px;}
-  }
+  hr { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
 </style>
+</head>
+<body>
+<div class="wrap">
 
-<div class="aqi-root" id="aqiRoot">
+  <h1>AQI Forecasting MLOps Platform</h1>
+  <div class="subtitle">End-to-End Pipeline Architecture — extracted from <code>d:\10Pearls\aqi-forecasting-mlops</code></div>
 
-  <div class="topbar">
-    <div class="topbar-brand">
-      <span class="topbar-dot"></span>
-      <span class="mono">AQI-PLATFORM // ARCHITECTURE.v1</span>
+  <div class="callout important">
+    <span class="callout-label">Note</span>
+    This document provides a complete technical breakdown of the data pipeline architecture from raw data ingestion through to the model registry. All details are extracted directly from the codebase.
+  </div>
+
+  <div class="toc">
+    <div class="toc-title">Contents</div>
+    <ol>
+      <li><a href="#s1">Data Ingestion &amp; Merging Pipeline</a></li>
+      <li><a href="#s2">Feature Engineering &amp; Transformation Pipeline</a></li>
+      <li><a href="#s3">Model Training &amp; Horizon Strategy</a></li>
+      <li><a href="#s4">Model Registry &amp; Storage</a></li>
+      <li><a href="#s5">End-to-End Pipeline Orchestration</a></li>
+      <li><a href="#s6">Complete Source File Map</a></li>
+      <li><a href="#s7">Data Statistics Summary</a></li>
+    </ol>
+  </div>
+
+  <h2 id="master">Master Architecture Diagram</h2>
+  <div class="mermaid-container">
+    <div class="mermaid">
+graph TB
+    subgraph EXTERNAL["External Data Sources"]
+        API1["AQICN API<br/>api.waqi.info/feed/city"]
+        API2["OpenWeather API<br/>Current Weather + Air Pollution"]
+        API3["OpenWeather Historical API<br/>Hourly Backfill"]
+    end
+
+    subgraph INGESTION["Phase 1: Data Ingestion and Merging"]
+        AC["AQICNClient<br/>src/ingestion/aqi_client.py"]
+        WC["OpenWeatherClient<br/>src/ingestion/weather_client.py"]
+        HC["HistoricalDataClient<br/>src/ingestion/historical_client.py"]
+        HB["HistoricalBackfill<br/>src/ingestion/historical_backfill.py"]
+        MG["DataMerger<br/>src/ingestion/merger.py<br/>Outer Join on city, timestamp<br/>ffill then bfill then interpolate"]
+        VL["DataValidator<br/>src/ingestion/validator.py"]
+        ST["DataStorage<br/>src/ingestion/storage.py<br/>Versioned Parquet + SHA-256"]
+    end
+
+    subgraph STORAGE_LAYER["Data Lake - Local Filesystem"]
+        RAW["data/raw/"]
+        PROC["data/processed/vN/<br/>historical_city.parquet<br/>metadata.json"]
+        FEAST["data/feast_ready/<br/>aqi_features.parquet"]
+    end
+
+    subgraph FEATURE_ENG["Phase 2: Feature Engineering - 626 Features"]
+        BF["build_features.py<br/>Master Orchestrator"]
+        TF["temporal_features.py<br/>~38 features"]
+        LF["lag_features.py<br/>~75 features"]
+        RF["rolling_features.py<br/>~270 features"]
+        TR["trend_features.py<br/>~63 features"]
+        SF["spatial_features.py<br/>~12 features"]
+        IF["interaction_features.py<br/>~12 features"]
+        AQ["air_quality_features.py<br/>~8 features"]
+        SE["scaling_encoding.py<br/>~22 one-hot + scaler"]
+        FT["ForecastTargetBuilder<br/>forecast_targets.py<br/>shift -24, -48, -72"]
+    end
+
+    subgraph TRAINING_DATA["Training Dataset"]
+        TD["data/training/<br/>training_dataset.parquet<br/>105,054 rows x 632 cols"]
+        SPLITS["Train/Val/Test Splits<br/>features_train.parquet 66,550<br/>features_val.parquet 14,982<br/>features_test.parquet 14,849"]
+        SC["scaler.joblib<br/>Fitted StandardScaler"]
+    end
+
+    subgraph TRAINING["Phase 3: Model Training - Per Horizon"]
+        DL["AQIDatasetLoader<br/>dataset.py<br/>Isolates X features + y target<br/>Drops metadata and other targets"]
+        MM["MultiModelTrainer<br/>train_multi_models.py"]
+        R["Ridge<br/>alpha=10.0"]
+        RFM["RandomForest<br/>n=50, depth=8"]
+        HGB["HistGradientBoosting<br/>iter=100, lr=0.1, depth=6"]
+        XGB["XGBoostTrainer<br/>train_xgboost.py<br/>n=100, lr=0.1, depth=6"]
+        LSTM["LSTMTrainer<br/>train_lstm.py<br/>LSTM64 to Dropout0.2 to Dense32 to Dense1"]
+        PROPH["ProphetTrainer<br/>train_prophet.py<br/>yearly+weekly+daily seasonality"]
+    end
+
+    subgraph TRACKING["Experiment Tracking"]
+        MLF["MLflow Tracking Server<br/>mlflow.db SQLite<br/>mlruns/ 4 experiments"]
+        METRICS["Logged Metrics:<br/>val_rmse, val_mae, val_r2<br/>test_rmse, test_mae, test_r2"]
+    end
+
+    subgraph REGISTRY["Phase 4: Model Registry"]
+        MLFR["MLflow Model Registry<br/>AQI_Forecaster_horizonH<br/>AQI_Forecaster_Production"]
+        LOCAL["Local Registry<br/>models/registry/registry/"]
+        JOBLB["Serialized Artifacts:<br/>24h_model.joblib<br/>48h_model.joblib<br/>72h_model.joblib"]
+        META["Metadata JSONs:<br/>24h_metadata.json 626 features<br/>48h_metadata.json<br/>72h_metadata.json"]
+        EVAL["Evaluation Artifacts:<br/>evaluation_metrics.json<br/>actual_vs_predicted.png<br/>residual plots + predictions"]
+        STANDALONE["Standalone Models:<br/>xgboost_aqi_model.joblib<br/>lstm_aqi_model.keras<br/>prophet_aqi_model.joblib<br/>ridge_baseline.joblib"]
+    end
+
+    API1 --> AC
+    API2 --> WC
+    API3 --> HC
+    HC --> HB
+
+    AC --> MG
+    WC --> MG
+    HB --> MG
+    MG --> VL
+    VL --> ST
+
+    ST --> RAW
+    ST --> PROC
+    PROC --> FEAST
+
+    PROC --> BF
+    BF --> TF
+    BF --> LF
+    BF --> RF
+    BF --> TR
+    BF --> SF
+    BF --> IF
+    BF --> AQ
+    BF --> SE
+    BF --> FT
+
+    FT --> TD
+    TD --> SPLITS
+    SE --> SC
+
+    SPLITS --> DL
+    DL -->|"24h / 48h / 72h"| MM
+    MM --> R
+    MM --> RFM
+    MM --> HGB
+    DL --> XGB
+    DL --> LSTM
+    DL --> PROPH
+
+    R --> MLF
+    RFM --> MLF
+    HGB --> MLF
+    XGB --> MLF
+    LSTM --> MLF
+    PROPH --> MLF
+    MLF --> METRICS
+
+    MLF --> MLFR
+    MM -->|"Winner per horizon"| LOCAL
+    LOCAL --> JOBLB
+    LOCAL --> META
+    LOCAL --> EVAL
+    XGB --> STANDALONE
+    LSTM --> STANDALONE
+    PROPH --> STANDALONE
     </div>
-    <div class="topbar-actions">
-      <button class="icon-btn" id="printBtn">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 9V3h12v6"/><rect x="6" y="13" width="12" height="8"/><path d="M4 9h16a2 2 0 0 1 2 2v5h-4M2 16v-5a2 2 0 0 1 2-2"/></svg>
-        Export / Print
-      </button>
-      <button class="icon-btn" id="themeBtn">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
-        <span id="themeLabel">Dark</span>
-      </button>
+  </div>
+
+  <hr>
+  <h2 id="s1">1. Data Ingestion &amp; Merging Pipeline</h2>
+
+  <h3>1.1 External API Data Sources</h3>
+  <p>The platform pulls data from <b>two external APIs</b> covering <b>3 Pakistani cities</b>: Islamabad, Karachi, and Lahore.</p>
+  <table>
+    <tr><th>API</th><th>Endpoint</th><th>Client Module</th><th>Data Retrieved</th></tr>
+    <tr><td><b>AQICN</b></td><td><code>api.waqi.info/feed/{city}/?token={key}</code></td><td>aqi_client.py</td><td>AQI value, dominant pollutant, station ID, PM2.5, PM10, NO₂, SO₂, CO, O₃</td></tr>
+    <tr><td><b>OpenWeather Current</b></td><td><code>api.openweathermap.org/data/2.5/weather</code></td><td>weather_client.py</td><td>Temperature, feels_like, humidity, pressure, visibility, wind_speed, wind_degree, cloudiness</td></tr>
+    <tr><td><b>OpenWeather Air Pollution</b></td><td><code>api.openweathermap.org/data/2.5/air_pollution</code></td><td>weather_client.py</td><td>Supplementary pollutant concentrations</td></tr>
+    <tr><td><b>OpenWeather Historical</b></td><td><code>api.openweathermap.org/data/2.5/onecall/timemachine</code></td><td>historical_client.py</td><td>Hourly historical weather data for backfill</td></tr>
+  </table>
+
+  <div class="callout important">
+    <span class="callout-label">Important</span>
+    API keys are managed via Pydantic <code>SecretStr</code> in settings.py with <code>.env</code> file loading. Keys: <code>AQICN_API_KEY</code>, <code>OPENWEATHER_API_KEY</code>.
+  </div>
+
+  <h3>1.2 API Client Architecture</h3>
+  <p>All clients inherit from a base <code>APIClient</code> class:</p>
+  <div class="file-tree">APIClient (base)
+  ├── AQICNClient      → Real-time AQI per city
+  ├── OpenWeatherClient → Current weather + air pollution per city
+  └── HistoricalDataClient → Date-range hourly historical weather
+        └── HistoricalBackfill → Bulk multi-date backfill orchestrator</div>
+
+  <p>The base client provides:</p>
+  <ul>
+    <li><b>Configurable retries</b> (default: 3) with exponential backoff</li>
+    <li><b>Configurable timeout</b> (default: 30s, max: 120s)</li>
+    <li><b>Session management</b> via <code>requests.Session</code></li>
+    <li><b>Batch processing</b> (default batch_size: 100)</li>
+  </ul>
+
+  <h3>1.3 Historical Backfill Strategy</h3>
+  <p><code>HistoricalBackfill</code> iterates day-by-day over a date range, calling the historical API for each <code>(city, date)</code> pair. The dataset spans <span class="stat-badge">2022-07-21 → 2026-07-18</span> (~4 years of hourly data).</p>
+
+  <h3>1.4 Data Merging Pipeline</h3>
+  <p><code>DataMerger</code> (17,377 bytes — the largest ingestion module) performs multi-stream fusion:</p>
+  <div class="mermaid-container">
+    <div class="mermaid">
+graph LR
+    A["AQI Stream<br/>city, timestamp, aqi, pollutants"] --> M["OUTER JOIN<br/>on city, timestamp"]
+    B["Weather Stream<br/>city, timestamp, temp, humidity"] --> M
+    C["Historical Stream<br/>city, timestamp, backfill data"] --> M
+    M --> D["Forward Fill<br/>ffill"]
+    D --> E["Backward Fill<br/>bfill"]
+    E --> F["Linear Interpolation<br/>remaining gaps"]
+    F --> G["Merged DataFrame"]
     </div>
   </div>
 
-  <div class="hero">
-    <div class="hero-eyebrow">End-to-End MLOps Reference Architecture</div>
-    <h1 class="display">AI Air Quality Prediction Platform</h1>
-    <p>A dual-path pipeline — live and historical — flowing through validation, feature engineering and a Feast-backed feature store into real-time model serving.</p>
-    <div class="hero-stats">
-      <div class="stat-pill"><span class="dot" style="background:var(--blue)"></span> 5 architectural layers</div>
-      <div class="stat-pill"><b>3</b> ingestion sources</div>
-      <div class="stat-pill">Live <b>+</b> historical dual-path</div>
-      <div class="stat-pill">Feast-powered feature store</div>
-      <div class="stat-pill">FastAPI real-time inference</div>
+  <p><b>Key merge details:</b></p>
+  <ul>
+    <li><b>Join keys</b>: <code>(city, timestamp)</code></li>
+    <li><b>Join type</b>: Outer join (preserves all timestamps from all sources)</li>
+    <li><b>Missing value strategy</b> (3-stage):
+      <ol>
+        <li><b>Forward fill</b> (<code>ffill</code>) — propagate last known value forward</li>
+        <li><b>Backward fill</b> (<code>bfill</code>) — fill remaining leading NaNs from next known value</li>
+        <li><b>Linear interpolation</b> — numeric-only interpolation for any remaining gaps</li>
+      </ol>
+    </li>
+  </ul>
+
+  <h3>1.5 Data Validation</h3>
+  <p><code>DataValidator</code> checks:</p>
+  <ul>
+    <li><b>Completeness</b>: Missing value counts and percentages per column</li>
+    <li><b>Range validation</b>: Values within expected physical bounds</li>
+    <li><b>Duplicate detection</b>: Zero duplicates enforced</li>
+    <li><b>Timestamp continuity</b>: Gap detection between consecutive hourly records</li>
+  </ul>
+  <p>Quality report output (actual from <code>data/training/quality_report.json</code>):</p>
+  <ul>
+    <li>105,054 rows, 0 duplicates, 0 timestamp gaps</li>
+    <li>Missing values: ~1,023 per pollutant column (~0.97%) — from <code>unknown</code> dominant pollutant records</li>
+  </ul>
+
+  <h3>1.6 Versioned Storage</h3>
+  <p><code>DataStorage</code> manages an <b>immutable, versioned data lake</b>:</p>
+  <div class="file-tree">data/processed/
+  ├── _backups/
+  ├── v1/   → 3 rows (initial test)
+  │   ├── features.parquet
+  │   ├── features.csv
+  │   ├── features.json
+  │   └── metadata.json (SHA-256 checksums)
+  ├── v2/ ... v12/
+  └── v13/ → 264 rows (latest ingestion)
+      ├── historical_islamabad.parquet
+      ├── historical_islamabad_features.parquet
+      └── metadata.json</div>
+
+  <p>Each version includes:</p>
+  <ul>
+    <li><b>Parquet files</b> with schema: 24 columns (city, country, lat, lon, timestamp, weather features, AQI, pollutants, source, created_at)</li>
+    <li><b><code>metadata.json</code></b> with version, row count, column list, file sizes, and <b>SHA-256 checksums</b> for integrity verification</li>
+  </ul>
+
+  <hr>
+  <h2 id="s2">2. Feature Engineering &amp; Transformation Pipeline</h2>
+
+  <h3>2.1 Pipeline Orchestration</h3>
+  <p>The feature engineering pipeline is orchestrated by <code>build_features.py</code> which calls 9 specialized feature modules in sequence:</p>
+
+  <div class="mermaid-container">
+    <div class="mermaid">
+graph TB
+    RAW["Merged Raw Data<br/>24 columns"] --> BF["build_features.py<br/>FeatureBuilder.build_all"]
+
+    BF --> T1["1. temporal_features.py"]
+    BF --> T2["2. lag_features.py"]
+    BF --> T3["3. rolling_features.py"]
+    BF --> T4["4. trend_features.py"]
+    BF --> T5["5. spatial_features.py"]
+    BF --> T6["6. interaction_features.py"]
+    BF --> T7["7. air_quality_features.py"]
+    BF --> T8["8. scaling_encoding.py"]
+    BF --> T9["9. forecast_targets.py"]
+
+    T1 --> FV["626-Feature Vector<br/>+ 3 Target Columns<br/>+ 3 Metadata Columns<br/>= 632 total columns"]
+    T2 --> FV
+    T3 --> FV
+    T4 --> FV
+    T5 --> FV
+    T6 --> FV
+    T7 --> FV
+    T8 --> FV
+    T9 --> FV
+
+    FV --> SPLIT["Chronological Split"]
+    SPLIT --> TR["features_train.parquet<br/>66,550 rows"]
+    SPLIT --> VA["features_val.parquet<br/>14,982 rows"]
+    SPLIT --> TE["features_test.parquet<br/>14,849 rows"]
     </div>
   </div>
 
-  <div class="canvas-wrap">
-    <div class="zoom-stage" id="zoomStage">
-      <div class="pipeline" id="pipeline">
-        <div class="spine"></div>
-      </div>
+  <h3>2.2 Feature Vector Breakdown (626 Features)</h3>
+  <p>The 632-column dataset = <b>626 input features</b> + 3 target columns + 3 metadata columns:</p>
+  <table>
+    <tr><th>#</th><th>Category</th><th>Module</th><th>Count</th><th>Examples</th></tr>
+    <tr><td>1</td><td><b>Base / Raw</b></td><td><i>(from ingestion)</i></td><td>~15</td><td><code>latitude</code>, <code>longitude</code>, <code>feels_like</code>, <code>humidity</code>, <code>pressure</code>, <code>visibility</code>, <code>wind_speed</code>, <code>wind_degree</code>, <code>cloudiness</code>, <code>aqi</code>, <code>station_id</code>, <code>pm25</code>, <code>pm10</code>, <code>no2</code>, <code>so2</code>, <code>co</code>, <code>o3</code></td></tr>
+    <tr><td>2</td><td><b>Temporal</b></td><td>temporal_features.py</td><td>~38</td><td><code>hour</code>, <code>day</code>, <code>month</code>, <code>day_of_week</code>, <code>is_weekend</code>, <code>hour_sin/cos</code>, <code>day_of_week_sin/cos</code>, <code>month_sin/cos</code>, <code>quarter</code>, <code>season_sin/cos</code>, <code>is_holiday</code>, <code>is_working_day</code>, <code>is_morning/afternoon/evening/night</code>, <code>is_rush_hour</code>, <code>is_q1-q4</code></td></tr>
+    <tr><td>3</td><td><b>Lag</b></td><td>lag_features.py</td><td>~75</td><td><code>{var}_lag_{k}</code> for 10 variables × lag windows [1, 3, 6, 12, 24, 48, 72]. Variables: <code>aqi</code>, <code>pm25</code>, <code>pm10</code>, <code>no2</code>, <code>so2</code>, <code>co</code>, <code>o3</code>, <code>temperature</code>, <code>humidity</code>, <code>pressure</code>, <code>wind_speed</code></td></tr>
+    <tr><td>4</td><td><b>Rolling Window</b></td><td>rolling_features.py</td><td>~270</td><td><code>{var}_roll{stat}_{window}h</code> for 10 variables × 6 stats × 5 windows. Stats: mean, std, min, max, median, ema. Windows: [6h, 12h, 24h, 48h, 168h]</td></tr>
+    <tr><td>5</td><td><b>Trend</b></td><td>trend_features.py</td><td>~63</td><td><code>{var}_diff_{k}</code>, <code>{var}_pctchange_{k}</code>, <code>{var}_roc_{k}</code> for 7 pollutant vars × [1, 3, 6, 24] periods, plus <code>{var}_momentum_3</code></td></tr>
+    <tr><td>6</td><td><b>Spatial</b></td><td>spatial_features.py</td><td>~12</td><td><code>lat_lon_product</code>, <code>city_Islamabad/Karachi/Lahore</code>, <code>station_{id}</code> one-hot, <code>country_PK</code></td></tr>
+    <tr><td>7</td><td><b>Interaction</b></td><td>interaction_features.py</td><td>~12</td><td><code>temp_humidity_interaction</code>, <code>wind_pm25_interaction</code>, <code>pm25_per_wind</code>, <code>dew_point</code>, <code>heat_index</code>, <code>pm25_pm10_ratio</code>, <code>no2_so2_ratio</code></td></tr>
+    <tr><td>8</td><td><b>Air Quality</b></td><td>air_quality_features.py</td><td>~8</td><td><code>dominant_{pollutant}</code> one-hot (co, no2, o3, pm10, pm25, so2, unknown), <code>pollution_index</code></td></tr>
+    <tr><td>9</td><td><b>Encoding</b></td><td>scaling_encoding.py</td><td>~22</td><td><code>day_of_week_name_{day}</code>, <code>season_{name}</code>, plus StandardScaler applied to all numeric features → <code>scaler.joblib</code></td></tr>
+    <tr style="font-weight:700"><td colspan="3">TOTAL</td><td colspan="2">626</td></tr>
+  </table>
+
+  <div class="callout tip">
+    <span class="callout-label">Tip</span>
+    The metadata/non-feature columns excluded from model input are defined in constants.py: <code>timestamp</code>, <code>city</code>, <code>country</code>, <code>created_at</code>, <code>source</code>, <code>aqi_category</code>, <code>dominant_pollutant</code>.
+  </div>
+
+  <h3>2.3 Target Variable Construction</h3>
+  <p><code>ForecastTargetBuilder</code> creates 3 direct forecast targets using <b>negative shift per city group</b>:</p>
+  <pre><code># Per-city groupby shift: pulls future AQI value back to current row
+df[f"target_aqi_t+{horizon}"] = df.groupby("city")["aqi"].shift(-horizon)</code></pre>
+
+  <table>
+    <tr><th>Target Column</th><th>Meaning</th><th>Shift</th><th>NaN Tail</th></tr>
+    <tr><td><code>target_aqi_t+24</code></td><td>AQI 24 hours from now</td><td><code>shift(-24)</code></td><td>Last 24 rows per city</td></tr>
+    <tr><td><code>target_aqi_t+48</code></td><td>AQI 48 hours from now</td><td><code>shift(-48)</code></td><td>Last 48 rows per city</td></tr>
+    <tr><td><code>target_aqi_t+72</code></td><td>AQI 72 hours from now</td><td><code>shift(-72)</code></td><td>Last 72 rows per city</td></tr>
+  </table>
+
+  <h3>2.4 Dataset Split &amp; Persistence</h3>
+  <p>The engineered dataset is <b>chronologically split</b> (no random shuffle — preserves temporal ordering):</p>
+  <table>
+    <tr><th>Split</th><th>File</th><th>Rows</th><th>Purpose</th></tr>
+    <tr><td>Train</td><td><code>features_train.parquet</code> (~127 MB)</td><td>66,550</td><td>Model fitting</td></tr>
+    <tr><td>Validation</td><td><code>features_val.parquet</code> (~32 MB)</td><td>14,982</td><td>Hyperparameter tuning &amp; early stopping</td></tr>
+    <tr><td>Test</td><td><code>features_test.parquet</code> (~32 MB)</td><td>14,849</td><td>Final unbiased evaluation</td></tr>
+  </table>
+
+  <p>Additional artifacts in <code>data/training/</code>:</p>
+  <ul>
+    <li><code>training_dataset.parquet</code> — Combined pre-split features (~2.4 MB)</li>
+    <li><code>scaler.joblib</code> — Fitted <code>StandardScaler</code> (~54 KB)</li>
+    <li><code>dataset_statistics.json</code> — Statistical summaries (mean, std, min, max per feature)</li>
+    <li><code>quality_report.json</code> — Data quality validation results</li>
+    <li><code>feature_build_report.json</code> — Feature pipeline execution metadata</li>
+  </ul>
+
+  <h3>2.5 Feast Feature Store Integration</h3>
+  <p>A Feast feature store is configured for online/offline serving:</p>
+  <ul>
+    <li><b>Provider</b>: Local (SQLite-backed)</li>
+    <li><b>Entity</b>: <code>city</code> (join key)</li>
+    <li><b>Feature View</b>: <code>aqi_features</code> with 26 base schema fields</li>
+    <li><b>Online Store</b>: <code>data/online_store.db</code> (SQLite)</li>
+    <li><b>Offline Source</b>: <code>data/feast_ready/aqi_features.parquet</code></li>
+    <li><b>TTL</b>: 365 days</li>
+  </ul>
+
+  <hr>
+  <h2 id="s3">3. Model Training &amp; Horizon Strategy</h2>
+
+  <h3>3.1 Training Pipeline Flow</h3>
+  <div class="mermaid-container">
+    <div class="mermaid">
+graph LR
+    subgraph PER_HORIZON["For Each Horizon: 24h, 48h, 72h"]
+        LOAD["AQIDatasetLoader<br/>Load Parquet Splits"]
+        SEP["Separate X and y<br/>Drop metadata cols<br/>Drop other target cols<br/>Keep current aqi as feature"]
+        TRAIN["MultiModelTrainer<br/>Train 3 candidates"]
+        SELECT["Select Winner<br/>by Test RMSE"]
+        REG["Register and Save"]
+    end
+
+    LOAD --> SEP --> TRAIN --> SELECT --> REG
     </div>
   </div>
 
-  <div class="legend" id="legend">
-    <div class="legend-title">Layers</div>
+  <h3>3.2 Dataset Loading &amp; Feature Isolation</h3>
+  <p><code>AQIDatasetLoader</code> performs critical data preparation:</p>
+  <ol>
+    <li>Loads 3 pre-split Parquet files</li>
+    <li>Validates schema consistency across splits</li>
+    <li><b>For horizon-specific training</b> (e.g., 24h):
+      <ul>
+        <li>Sets active target: <code>target_aqi_t+24</code></li>
+        <li>Drops rows where target is NaN (future unavailable)</li>
+        <li>Drops other target columns (<code>target_aqi_t+48</code>, <code>target_aqi_t+72</code>) from X to <b>prevent feature leakage</b></li>
+        <li>Drops metadata columns (timestamp, city, etc.)</li>
+        <li><b>Keeps current raw <code>aqi</code></b> as a valid predictor in X</li>
+      </ul>
+    </li>
+    <li>Returns frozen <code>DatasetSplits</code> dataclass</li>
+  </ol>
+
+  <h3>3.3 ML Algorithms &amp; Hyperparameters</h3>
+  <p>Six algorithms are trained, with the <b>first three competing</b> in the multi-model comparison per horizon:</p>
+  <table>
+    <tr><th>Algorithm</th><th>Class</th><th>Module</th><th>Key Hyperparameters</th><th>Input Format</th></tr>
+    <tr><td><b>Ridge Regression</b></td><td><code>Ridge</code></td><td>train_multi_models.py</td><td><code>alpha=10.0</code>, <code>random_state=42</code></td><td>2D Tabular</td></tr>
+    <tr><td><b>Random Forest</b></td><td><code>RandomForestRegressor</code></td><td>train_multi_models.py</td><td><code>n_estimators=50</code>, <code>max_depth=8</code>, <code>n_jobs=-1</code></td><td>2D Tabular</td></tr>
+    <tr><td><b>HistGradientBoosting</b></td><td><code>HistGradientBoostingRegressor</code></td><td>train_multi_models.py</td><td><code>max_iter=100</code>, <code>lr=0.1</code>, <code>max_depth=6</code></td><td>2D Tabular</td></tr>
+    <tr><td><b>XGBoost</b></td><td><code>XGBRegressor</code></td><td>train_xgboost.py</td><td><code>n_estimators=100</code>, <code>lr=0.1</code>, <code>max_depth=6</code>, <code>n_jobs=-1</code></td><td>2D Tabular</td></tr>
+    <tr><td><b>LSTM</b></td><td><code>Sequential</code> (Keras)</td><td>train_lstm.py</td><td>LSTM(64) → Dropout(0.2) → Dense(32, relu) → Dense(1, linear). Adam, MSE, epochs=15, batch=64, EarlyStopping(patience=3)</td><td>3D (N, 1, Features)</td></tr>
+    <tr><td><b>Prophet</b></td><td><code>Prophet</code></td><td>train_prophet.py</td><td><code>yearly/weekly/daily_seasonality=True</code>, <code>changepoint_prior_scale=0.05</code></td><td>2D (ds, y)</td></tr>
+    <tr><td><b>Ridge Baseline</b></td><td><code>Ridge</code></td><td>Ridgetrain.py</td><td><code>alpha=10.0</code> (standalone baseline)</td><td>2D Tabular</td></tr>
+  </table>
+
+  <h3>3.4 MLflow Experiment Tracking</h3>
+  <div class="mermaid-container">
+    <div class="mermaid">
+graph TB
+    subgraph MLFLOW["MLflow Tracking - mlflow.db plus mlruns/"]
+        EXP1["Experiment: AQI_Model_Comparison_24H"]
+        EXP2["Experiment: AQI_Model_Comparison_48H"]
+        EXP3["Experiment: AQI_Model_Comparison_72H"]
+        EXP4["Experiment: AQI_Forecasting_Model_Comparison"]
+
+        EXP1 --> RUN1["Run: Ridge_24H"]
+        EXP1 --> RUN2["Run: Random_Forest_24H"]
+        EXP1 --> RUN3["Run: Gradient_Boosting_24H"]
+
+        EXP4 --> RUN4["Run: XGBoost"]
+        EXP4 --> RUN5["Run: LSTM"]
+        EXP4 --> RUN6["Run: Prophet"]
+    end
+
+    subgraph LOGGED["Per-Run Logged Data"]
+        PARAMS["Parameters:<br/>All model hyperparams<br/>horizon_hours"]
+        MET["Metrics:<br/>val_rmse, val_mae, val_r2<br/>test_rmse, test_mae, test_r2"]
+        ART["Artifacts:<br/>Model sklearn/xgboost/tensorflow<br/>Input Signature"]
+    end
+
+    RUN1 --> PARAMS
+    RUN1 --> MET
+    RUN1 --> ART
+    </div>
   </div>
 
-  <div class="zoom-ctrl">
-    <button id="zOut">−</button>
-    <div class="zlabel" id="zLabel">100%</div>
-    <button id="zIn">+</button>
-    <button id="zReset" title="Reset" style="font-size:11px;">⟲</button>
+  <p><b>MLflow Configuration:</b></p>
+  <ul>
+    <li><b>Backend Store</b>: SQLite at <code>mlflow.db</code></li>
+    <li><b>Artifact Store</b>: Local <code>mlruns/</code> directory (4 experiments)</li>
+    <li><b>Model Logging</b>: <code>mlflow.sklearn.log_model()</code>, <code>mlflow.xgboost.log_model()</code>, <code>mlflow.tensorflow.log_model()</code></li>
+    <li><b>Signature</b>: Auto-inferred via <code>mlflow.models.infer_signature(X_val, predictions)</code></li>
+  </ul>
+
+  <h3>3.5 Winner Selection</h3>
+  <p>Per-horizon, the <code>MultiModelTrainer</code> selects the <b>lowest test RMSE</b> candidate:</p>
+  <pre><code>if test_metrics["rmse"] < best_test_rmse:
+    best_test_rmse = test_metrics["rmse"]
+    best_model_name = model_name
+    best_model_artifact = model_instance
+    best_run_id = run.info.run_id</code></pre>
+
+  <p>The winner is then:</p>
+  <ol>
+    <li><b>Registered in MLflow Registry</b> as <code>AQI_Forecaster_{horizon}H</code></li>
+    <li><b>Saved locally</b> as <code>{horizon}h_model.joblib</code> + <code>{horizon}h_metadata.json</code></li>
+  </ol>
+
+  <hr>
+  <h2 id="s4">4. Model Registry &amp; Storage</h2>
+
+  <h3>4.1 Dual Registry Architecture</h3>
+  <p>The platform maintains <b>two parallel registries</b>:</p>
+  <div class="mermaid-container">
+    <div class="mermaid">
+graph TB
+    subgraph DUAL["Dual Model Registry"]
+        subgraph MLFLOW_REG["MLflow Registry"]
+            MR1["AQI_Forecaster_24H"]
+            MR2["AQI_Forecaster_48H"]
+            MR3["AQI_Forecaster_72H"]
+            MR4["AQI_Forecaster_Production"]
+        end
+
+        subgraph LOCAL_REG["Local Registry - models/registry/registry/"]
+            subgraph HORIZON_MODELS["Per-Horizon Winners"]
+                H24["24h_model.joblib 1.46 MB<br/>24h_metadata.json"]
+                H48["48h_model.joblib 1.46 MB<br/>48h_metadata.json"]
+                H72["72h_model.joblib 1.46 MB<br/>72h_metadata.json"]
+            end
+
+            subgraph STANDALONE["Standalone Models"]
+                XG["xgboost_aqi_model.joblib 486 KB"]
+                LS["lstm_aqi_model.keras 2.1 MB"]
+                PR["prophet_aqi_model.joblib 6 MB"]
+                RB["ridge_baseline.joblib 17 KB"]
+            end
+
+            subgraph EVAL_DIR["evaluation/"]
+                EM["evaluation_metrics.json"]
+                EP["evaluation_metadata.json"]
+                PL["actual_vs_predicted.png<br/>residual_histogram.png<br/>residual_scatter.png"]
+                PP["validation_predictions.parquet<br/>test_predictions.parquet"]
+            end
+        end
+    end
+    </div>
   </div>
 
-  <div class="overlay" id="overlay"></div>
-  <div class="drawer" id="drawer">
-    <button class="drawer-close" id="drawerClose">
-      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
-    </button>
-    <div id="drawerBody"></div>
+  <h3>4.2 Local Registry Artifacts</h3>
+  <h4>Per-Horizon Model Artifacts</h4>
+  <p>The winning model per horizon is serialized with <code>joblib.dump()</code>. The metadata JSON contains:</p>
+  <pre><code>{
+    "model_version": "1.0.0",
+    "algorithm": "Gradient_Boosting",
+    "horizon_hours": 24,
+    "feature_names": ["latitude", "longitude", ...],
+    "feature_count": 626,
+    "best_test_rmse": 18.5467,
+    "training_timestamp": "2026-07-23T16:54:36.162907+00:00"
+}</code></pre>
+
+  <div class="callout important">
+    <span class="callout-label">Important</span>
+    The metadata JSON includes the <b>complete ordered feature manifest</b> (all 626 feature names). This is used by <code>ModelEvaluator</code> for <b>strict schema verification</b> at inference time — checking feature count, name matching, ordering, and numeric dtypes.
   </div>
+
+  <h4>Standalone Model Artifacts</h4>
+  <table>
+    <tr><th>Artifact</th><th>Format</th><th>Size</th><th>Algorithm</th></tr>
+    <tr><td><code>xgboost_aqi_model.joblib</code></td><td>Joblib</td><td>486 KB</td><td>XGBoost (feature_count: 603)</td></tr>
+    <tr><td><code>lstm_aqi_model.keras</code></td><td>Keras native</td><td>2.1 MB</td><td>LSTM Sequential</td></tr>
+    <tr><td><code>prophet_aqi_model.joblib</code></td><td>Joblib</td><td>6 MB</td><td>Facebook Prophet</td></tr>
+    <tr><td><code>ridge_baseline.joblib</code></td><td>Joblib</td><td>17 KB</td><td>Ridge (baseline)</td></tr>
+  </table>
+
+  <h4>Evaluation Artifacts (evaluation/)</h4>
+  <table>
+    <tr><th>File</th><th>Contents</th></tr>
+    <tr><td><code>evaluation_metrics.json</code></td><td>RMSE, MAE, MSE, R², explained variance, median/max absolute error, residual statistics for both validation and test splits</td></tr>
+    <tr><td><code>evaluation_metadata.json</code></td><td>Model name/version, timestamp, feature count, sample counts, sklearn/Python versions</td></tr>
+    <tr><td><code>actual_vs_predicted.png</code></td><td>Scatter plot of ground truth vs predictions</td></tr>
+    <tr><td><code>residual_histogram.png</code></td><td>Distribution of prediction residuals</td></tr>
+    <tr><td><code>residual_scatter.png</code></td><td>Residuals vs predicted values</td></tr>
+    <tr><td><code>validation_predictions.parquet</code></td><td>Actual, predicted, and residual columns for validation set</td></tr>
+    <tr><td><code>test_predictions.parquet</code></td><td>Actual, predicted, and residual columns for test set</td></tr>
+  </table>
+
+  <h3>4.3 Custom Model Registry (Versioning)</h3>
+  <p><code>ModelRegistry</code> provides a custom versioning and promotion system:</p>
+  <ul>
+    <li><b>Catalog</b>: <code>model_catalog.json</code> with all registered model records</li>
+    <li><b>Versioning</b>: Auto-incrementing semantic versions (<code>v1.0.0</code> → <code>v1.0.1</code>)</li>
+    <li><b>Lifecycle</b>: Staging → Production → Archived</li>
+    <li><b>Artifact Management</b>: Copies model files to versioned registry paths</li>
+  </ul>
+
+  <hr>
+  <h2 id="s5">5. End-to-End Pipeline Orchestration</h2>
+
+  <h3>5.1 CLI Entry Points</h3>
+  <p><code>main.py</code> provides 5 CLI commands:</p>
+  <table>
+    <tr><th>Command</th><th>Handler</th><th>Description</th></tr>
+    <tr><td><code>python main.py train --all</code></td><td><code>handle_train()</code></td><td>Train models for all horizons (24h, 48h, 72h)</td></tr>
+    <tr><td><code>python main.py evaluate --horizon 24</code></td><td><code>handle_evaluate()</code></td><td>Evaluate registered models</td></tr>
+    <tr><td><code>python main.py predict payload.json</code></td><td><code>handle_predict()</code></td><td>Single-payload inference</td></tr>
+    <tr><td><code>python main.py forecast --hours 72</code></td><td><code>handle_forecast()</code></td><td>Multi-step forward forecast</td></tr>
+    <tr><td><code>python main.py pipeline</code></td><td><code>handle_pipeline()</code></td><td>Full end-to-end pipeline</td></tr>
+  </table>
+
+  <h3>5.2 Full Pipeline Sequence</h3>
+  <p>The <code>pipeline</code> command triggers <code>run_end_to_end_pipeline()</code>:</p>
+  <div class="mermaid-container">
+    <div class="mermaid">
+sequenceDiagram
+    participant CLI as main.py pipeline
+    participant FE as build_features_pipeline
+    participant LOOP as Horizon Loop 24 48 72
+    participant LOAD as AQIDatasetLoader
+    participant TRAIN as MultiModelTrainer
+    participant MLFLOW as MLflow Tracking
+    participant REG as Local Registry
+
+    CLI->>FE: 1. Feature Engineering
+    FE-->>FE: Build 626 features + 3 targets
+    FE-->>FE: Chronological train/val/test split
+    FE-->>FE: Save Parquet files + scaler.joblib
+
+    loop For horizon in 24, 48, 72
+        CLI->>LOOP: 2. Training Loop
+        LOOP->>LOAD: load_prepared_splits(horizon)
+        LOAD-->>LOAD: Load Parquets, drop NaN targets
+        LOAD-->>LOAD: Isolate X 626 features and y target
+        LOAD->>TRAIN: DatasetSplits
+        TRAIN-->>TRAIN: Fit Ridge, RF, HistGB
+        TRAIN-->>TRAIN: Evaluate val and test metrics
+        TRAIN->>MLFLOW: Log params, metrics, model artifacts
+        TRAIN-->>TRAIN: Select winner lowest test RMSE
+        TRAIN->>MLFLOW: Register winner model
+        TRAIN->>REG: Save horizon model.joblib + metadata.json
+    end
+
+    CLI-->>CLI: Print leaderboard and timing
+    </div>
+  </div>
+
+  <hr>
+  <h2 id="s6">6. Complete Source File Map</h2>
+
+  <h3>Core Modules</h3>
+  <table>
+    <tr><th>Module</th><th>File</th><th>Responsibility</th></tr>
+    <tr><td><b>CLI</b></td><td><code>main.py</code></td><td>Master CLI orchestrator</td></tr>
+    <tr><td><b>Settings</b></td><td><code>settings.py</code></td><td>Pydantic config with .env + YAML sources</td></tr>
+    <tr><td><b>Constants</b></td><td><code>constants.py</code></td><td>Paths, column schema, split sizes</td></tr>
+  </table>
+
+  <h3>Ingestion Pipeline (src/ingestion/)</h3>
+  <table>
+    <tr><th>File</th><th>Key Class</th><th>Responsibility</th></tr>
+    <tr><td><code>api_client.py</code></td><td><code>APIClient</code></td><td>Base HTTP client with retries</td></tr>
+    <tr><td><code>aqi_client.py</code></td><td><code>AQICNClient</code></td><td>AQICN API integration</td></tr>
+    <tr><td><code>weather_client.py</code></td><td><code>OpenWeatherClient</code></td><td>OpenWeather API integration</td></tr>
+    <tr><td><code>historical_client.py</code></td><td><code>HistoricalDataClient</code></td><td>Historical weather backfill</td></tr>
+    <tr><td><code>historical_backfill.py</code></td><td><code>HistoricalBackfill</code></td><td>Bulk date-range backfill</td></tr>
+    <tr><td><code>merger.py</code></td><td><code>DataMerger</code></td><td>Multi-stream outer join + fill</td></tr>
+    <tr><td><code>validator.py</code></td><td><code>DataValidator</code></td><td>Data quality validation</td></tr>
+    <tr><td><code>storage.py</code></td><td><code>DataStorage</code></td><td>Versioned Parquet + checksums</td></tr>
+    <tr><td><code>run_pipeline.py</code></td><td>—</td><td>Ingestion orchestrator</td></tr>
+  </table>
+
+  <h3>Feature Engineering (src/feature_engineering/)</h3>
+  <table>
+    <tr><th>File</th><th>Key Function</th><th>Features Generated</th></tr>
+    <tr><td><code>build_features.py</code></td><td><code>FeatureBuilder.build_all()</code></td><td>Master orchestrator</td></tr>
+    <tr><td><code>temporal_features.py</code></td><td><code>add_temporal_features()</code></td><td>~38 time/calendar features</td></tr>
+    <tr><td><code>lag_features.py</code></td><td><code>add_lag_features()</code></td><td>~75 lagged variable features</td></tr>
+    <tr><td><code>rolling_features.py</code></td><td><code>add_rolling_features()</code></td><td>~270 rolling window stats</td></tr>
+    <tr><td><code>trend_features.py</code></td><td><code>add_trend_features()</code></td><td>~63 diff/pctchange/ROC/momentum</td></tr>
+    <tr><td><code>spatial_features.py</code></td><td><code>add_spatial_features()</code></td><td>~12 location/city encodings</td></tr>
+    <tr><td><code>interaction_features.py</code></td><td><code>add_interaction_features()</code></td><td>~12 cross-variable interactions</td></tr>
+    <tr><td><code>air_quality_features.py</code></td><td><code>add_air_quality_features()</code></td><td>~8 pollutant-derived features</td></tr>
+    <tr><td><code>scaling_encoding.py</code></td><td><code>apply_scaling_encoding()</code></td><td>~22 one-hot + StandardScaler</td></tr>
+  </table>
+
+  <h3>Training &amp; Registry (src/training/)</h3>
+  <table>
+    <tr><th>File</th><th>Key Class</th><th>Responsibility</th></tr>
+    <tr><td><code>forecast_targets.py</code></td><td><code>ForecastTargetBuilder</code></td><td>Create target_aqi_t+{24,48,72}</td></tr>
+    <tr><td><code>dataset.py</code></td><td><code>AQIDatasetLoader</code></td><td>Load splits, isolate X/y</td></tr>
+    <tr><td><code>train_multi_models.py</code></td><td><code>MultiModelTrainer</code></td><td>Ridge/RF/HistGB comparison</td></tr>
+    <tr><td><code>train_xgboost.py</code></td><td><code>XGBoostTrainer</code></td><td>Standalone XGBoost</td></tr>
+    <tr><td><code>train_lstm.py</code></td><td><code>LSTMTrainer</code></td><td>Standalone LSTM</td></tr>
+    <tr><td><code>train_prophet.py</code></td><td><code>ProphetTrainer</code></td><td>Standalone Prophet</td></tr>
+    <tr><td><code>Ridgetrain.py</code></td><td><code>RidgeBaselineTrainer</code></td><td>Ridge baseline</td></tr>
+    <tr><td><code>evaluate.py</code></td><td><code>ModelEvaluator</code></td><td>Schema validation + evaluation</td></tr>
+    <tr><td><code>registry.py</code></td><td><code>ModelRegistry</code></td><td>Local versioned model catalog</td></tr>
+    <tr><td><code>run_pipeline.py</code></td><td><code>run_end_to_end_pipeline()</code></td><td>E2E training orchestrator</td></tr>
+  </table>
+
+  <hr>
+  <h2 id="s7">7. Data Statistics Summary</h2>
+  <table>
+    <tr><th>Metric</th><th>Value</th></tr>
+    <tr><td><b>Cities</b></td><td>Islamabad, Karachi, Lahore (35,018 rows each)</td></tr>
+    <tr><td><b>Total Rows</b></td><td>105,054</td></tr>
+    <tr><td><b>Date Range</b></td><td>2022-07-21 → 2026-07-18 (~4 years hourly)</td></tr>
+    <tr><td><b>Input Features</b></td><td>626</td></tr>
+    <tr><td><b>Target Columns</b></td><td>3 (target_aqi_t+24/48/72)</td></tr>
+    <tr><td><b>Total Columns</b></td><td>632 (626 features + 3 targets + 3 metadata)</td></tr>
+    <tr><td><b>Train Split</b></td><td>66,550 rows (~63%)</td></tr>
+    <tr><td><b>Validation Split</b></td><td>14,982 rows (~14%)</td></tr>
+    <tr><td><b>Test Split</b></td><td>14,849 rows (~14%)</td></tr>
+    <tr><td><b>Missing Values</b></td><td>~0.97% per pollutant column (1,023 rows)</td></tr>
+    <tr><td><b>Dominant Pollutant</b></td><td>PM2.5 (87.8% of records)</td></tr>
+    <tr><td><b>Best Test RMSE</b></td><td>18.5467 (Gradient Boosting, 24h horizon)</td></tr>
+  </table>
+
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 <script>
-(function(){
-  const ICONS = {
-    api: '<circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/>',
-    cloud: '<path d="M7 18h10a4 4 0 0 0 .6-7.96A5.5 5.5 0 0 0 7.1 8.6 4 4 0 0 0 7 18z"/>',
-    cpu: '<rect x="7" y="7" width="10" height="10" rx="1.5"/><rect x="3" y="10" width="2" height="4"/><rect x="19" y="10" width="2" height="4"/><rect x="10" y="3" width="4" height="2"/><rect x="10" y="19" width="4" height="2"/>',
-    shield: '<path d="M12 2l7 3v6c0 5-3.4 8.4-7 10-3.6-1.6-7-5-7-10V5l7-3z"/><path d="M9 12l2 2 4-4"/>',
-    layers: '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>',
-    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>',
-    trend: '<path d="M3 17l5-6 4 4 7-9"/><path d="M15 6h4v4"/>',
-    database: '<ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v14c0 1.66 3.13 3 7 3s7-1.34 7-3V5"/><path d="M5 12c0 1.66 3.13 3 7 3s7-1.34 7-3"/>',
-    code: '<path d="M8 6 2 12l6 6"/><path d="M16 6l6 6-6 6"/>',
-    archive: '<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/><path d="M10 12h4"/>',
-    sync: '<path d="M4 12a8 8 0 0 1 14-5l2-2M20 12a8 8 0 0 1-14 5l-2 2"/><path d="M18 3v4h-4M6 21v-4h4"/>',
-    bolt: '<path d="M13 2 4 14h6l-1 8 9-12h-6l1-8z"/>',
-    brain: '<circle cx="8" cy="9" r="1.2"/><circle cx="16" cy="9" r="1.2"/><circle cx="12" cy="14" r="1.2"/><circle cx="8" cy="17" r="1.2"/><circle cx="16" cy="17" r="1.2"/><path d="M8 9L12 14M16 9L12 14M12 14L8 17M12 14L16 17M8 9L16 9"/>',
-    monitor: '<rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/>',
-    merge: '<path d="M6 3v6a4 4 0 0 0 4 4h4"/><path d="M12 9l4 4-4 4"/><path d="M6 21v-6"/>',
-    broom: '<path d="M4 20l6-6"/><path d="M9 15l7-7 3 3-7 7z"/><path d="M17 5l2 2"/>',
-    link: '<path d="M9 15l6-6"/><path d="M13 5l1-1a4 4 0 1 1 6 6l-1 1"/><path d="M11 19l-1 1a4 4 0 1 1-6-6l1-1"/>',
-    server: '<rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><circle cx="7" cy="7" r="0.6" fill="currentColor" stroke="none"/><circle cx="7" cy="17" r="0.6" fill="currentColor" stroke="none"/>'
-  };
-
-  const LAYERS = [
-    { id:'ingestion', num:'01', color:'blue', title:'Data Ingestion', icon:'cloud',
-      subtitle:'Live and historical acquisition from three independent sources, coordinated by an async orchestrator.',
-      flow:'raw JSON payloads  →  validation layer',
-      items:[
-        {name:'AQICN API', file:'aqi_client.py', icon:'api', badges:['httpx','asyncio'],
-          purpose:'Fetches real-time air quality index readings for target monitoring stations.', inputs:'Station ID · API key', outputs:'Raw AQI JSON'},
-        {name:'OpenWeather API', file:'weather_client.py', icon:'api', badges:['httpx','asyncio'],
-          purpose:'Fetches live meteorological data — temperature, humidity, wind, pressure.', inputs:'Lat / Lon · API key', outputs:'Raw weather JSON'},
-        {name:'Open-Meteo Historical', file:'historical_client.py', icon:'cloud', badges:['httpx','pandas'],
-          purpose:'Bulk backfill of historical weather and AQI data for model training.', inputs:'Date range · coordinates', outputs:'Hourly array JSON'},
-        {name:'Async Orchestrator', file:'run_pipeline.py', icon:'cpu', badges:['asyncio','Pydantic Settings'],
-          purpose:'Coordinates concurrent ingestion across all three sources and hands off to validation.', inputs:'Pipeline configuration', outputs:'Raw payloads (×3 sources)'},
-      ]},
-    { id:'validation', num:'02', color:'orange', title:'Validation & Processing', icon:'shield',
-      subtitle:'Schema validation and canonicalization — live data is row-validated, historical data is bulk-processed.',
-      flow:'clean canonical feature batch  →  feature engineering',
-      items:[
-        {name:'Pydantic Validation', file:'validator.py', icon:'shield', badges:['Pydantic v2'],
-          purpose:'Row-level schema validation of live API responses against WeatherResponse / AQIResponse models.', inputs:'Raw JSON (live)', outputs:'Validated typed objects'},
-        {name:'Feature Merger', file:'FeatureMerger.merge()', icon:'merge', badges:['dataclasses'],
-          purpose:"Reconciles validated weather and AQI objects into the platform's single canonical schema.", inputs:'Validated objects', outputs:'MergedFeature (canonical)'},
-        {name:'Bulk Historical Processing', file:'historical_client.py', icon:'layers', badges:['NumPy','pandas'],
-          purpose:'Processes bulk hourly arrays directly into canonical objects — no per-row validation overhead.', inputs:'Hourly array JSON', outputs:'MergedFeature (canonical)'},
-        {name:'Cleaning', file:'handle_missing_values()', icon:'broom', badges:['pandas'],
-          purpose:'Drops duplicates and handles missing values across both live and historical paths.', inputs:'Canonical feature batch', outputs:'Clean canonical batch'},
-      ]},
-    { id:'feature-eng', num:'03', color:'purple', title:'Feature Engineering', icon:'trend',
-      subtitle:'Multi-format persistence plus derivation of time-aware and pollution-specific features.',
-      flow:'Feast-ready parquet dataset  →  feature store',
-      items:[
-        {name:'Storage Manager', file:'storage.py', icon:'server', badges:['JSON','CSV','Parquet'],
-          purpose:'Persists every clean batch to disk in three formats for auditability and downstream use.', inputs:'Clean canonical batch', outputs:'JSON / CSV / Parquet files'},
-        {name:'Time Features', file:'feature_engineering.py', icon:'clock', badges:['pandas'],
-          purpose:'Extracts hour, day, month, weekday and weekend indicators from timestamps.', inputs:'Clean canonical batch', outputs:'Time-based feature columns'},
-        {name:'AQI Features', file:'feature_engineering.py', icon:'trend', badges:['pandas','NumPy'],
-          purpose:'Derives rolling_mean_3h and aqi_change_rate to capture short-term pollution dynamics.', inputs:'Clean canonical batch', outputs:'AQI-derived feature columns'},
-        {name:'Feast-Ready Dataset', file:'engineered.parquet', icon:'database', badges:['Parquet'],
-          purpose:'Final engineered dataframe, schema-aligned and ready for Feast registration.', inputs:'Time + AQI features', outputs:'Engineered Parquet dataset'},
-      ]},
-    { id:'feast', num:'04', color:'green', title:'Feast Feature Store', icon:'database',
-      subtitle:'Central registry, offline store for training joins, online store for low-latency serving.',
-      flow:'point-in-time joins & cached features  →  ML & serving',
-      items:[
-        {name:'Feature Definitions', file:'feature_definitions.py', icon:'code', badges:['Feast SDK'],
-          purpose:'Declares entities and FeatureViews describing the engineered dataset to Feast.', inputs:'Engineered Parquet dataset', outputs:'Entity + FeatureView definitions'},
-        {name:'Registry', file:'registry.db', icon:'database', badges:['feast apply'],
-          purpose:'Central metadata store tracking all registered features and their sources.', inputs:'Feature definitions', outputs:'Registered metadata'},
-        {name:'Offline Store', file:'offline/', icon:'archive', badges:['Parquet'],
-          purpose:'Historical feature files used for point-in-time correct training joins.', inputs:'Registered features', outputs:'Historical feature files'},
-        {name:'Materialization', file:'feast materialize()', icon:'sync', badges:['full backfill','incremental'],
-          purpose:'Loads features from offline to online store — full historical backfill plus hourly incremental updates.', inputs:'Offline store', outputs:'Online store updates'},
-        {name:'Online Store', file:'SQLite / Redis', icon:'bolt', badges:['SQLite','Redis'],
-          purpose:'Low-latency key-value store serving the most recent feature values to the API.', inputs:'Materialized features', outputs:'Cached latest features'},
-      ]},
-    { id:'ml-serving', num:'05', color:'red', title:'ML & Serving', icon:'brain',
-      subtitle:'Point-in-time correct training on historical features; real-time inference on cached online features.',
-      flow:'predictions  →  dashboard / client',
-      items:[
-        {name:'Historical Training Join', file:'get_historical_features()', icon:'link', badges:['Feast SDK'],
-          purpose:'Point-in-time correct join between entity timestamps and the offline store.', inputs:'Offline store', outputs:'ML training dataset'},
-        {name:'Model Training', file:'train_model.py', icon:'brain', badges:['scikit-learn','XGBoost'],
-          purpose:'Trains the AQI prediction model on the point-in-time correct training dataset.', inputs:'ML training dataset', outputs:'Trained model artifact'},
-        {name:'Online Feature Retrieval', file:'get_online_features()', icon:'bolt', badges:['Feast SDK'],
-          purpose:'Fetches the latest cached feature values for a real-time prediction request.', inputs:'Online store', outputs:'Latest feature vector'},
-        {name:'FastAPI Prediction API', file:'main.py', icon:'api', badges:['FastAPI','Uvicorn'],
-          purpose:'Serves real-time AQI predictions over a REST endpoint.', inputs:'Latest feature vector', outputs:'AQI prediction response'},
-        {name:'Dashboard / Client', file:'dashboard/', icon:'monitor', badges:['Web client'],
-          purpose:'Displays live predictions and trends to end users.', inputs:'Prediction response', outputs:'Visualized AQI forecast'},
-      ]},
-  ];
-
-  const svgIcon = (key, size=16) =>
-    `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${ICONS[key]||ICONS.api}</svg>`;
-
-  const pipeline = document.getElementById('pipeline');
-  const legend = document.getElementById('legend');
-
-  LAYERS.forEach((layer, idx) => {
-    const layerEl = document.createElement('div');
-    layerEl.className = `layer c-${layer.color}`;
-    layerEl.id = `layer-${layer.id}`;
-    layerEl.innerHTML = `
-      <div class="stage-badge c-${layer.color}">${layer.num}<small>STAGE</small></div>
-      <div class="layer-header" data-toggle="${layer.id}">
-        <div class="layer-icon c-${layer.color}" style="background:var(--accent-soft)">${svgIcon(layer.icon,20)}</div>
-        <div class="layer-titles">
-          <h2 class="display">${layer.title}</h2>
-          <p>${layer.subtitle}</p>
-        </div>
-        <div class="layer-toggle"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></div>
-      </div>
-      <div class="cards-wrapper"><div class="cards-inner"><div class="cards-row"></div></div></div>
-    `;
-    const row = layerEl.querySelector('.cards-row');
-    layer.items.forEach(item => {
-      const card = document.createElement('div');
-      card.className = `card c-${layer.color}`;
-      card.innerHTML = `
-        <div class="card-top">
-          <div class="card-icon c-${layer.color}">${svgIcon(item.icon,15)}</div>
-          <h3>${item.name}</h3>
-        </div>
-        <div class="card-file mono">${item.file}</div>
-        <div class="card-badges">${item.badges.map(b=>`<span class="badge">${b}</span>`).join('')}</div>
-      `;
-      card.addEventListener('click', () => openDrawer(layer, item));
-      row.appendChild(card);
-    });
-    pipeline.appendChild(layerEl);
-
-    if (idx < LAYERS.length - 1) {
-      const strip = document.createElement('div');
-      strip.className = `flow-strip c-${layer.color}`;
-      strip.innerHTML = `
-        <span class="flow-label mono">${layer.flow}</span>
-        <div class="flow-line"><span></span><span></span><span></span></div>
-        <svg class="flow-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 9l6 6 6-6"/></svg>
-      `;
-      pipeline.appendChild(strip);
-    }
-
-    const legendItem = document.createElement('div');
-    legendItem.className = 'legend-item';
-    legendItem.innerHTML = `<span class="legend-swatch" style="background:var(--${layer.color})"></span> ${layer.title}`;
-    legendItem.addEventListener('click', () => {
-      layerEl.scrollIntoView({behavior:'smooth', block:'center'});
-      layerEl.style.transition = 'box-shadow .3s';
-      layerEl.style.boxShadow = `0 0 0 2px var(--${layer.color}) inset`;
-      setTimeout(()=> layerEl.style.boxShadow = '', 900);
-    });
-    legend.appendChild(legendItem);
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      background: '#111827',
+      primaryColor: '#1e293b',
+      primaryTextColor: '#f3f4f6',
+      primaryBorderColor: '#38bdf8',
+      lineColor: '#64748b',
+      secondaryColor: '#0f172a',
+      tertiaryColor: '#1e1b4b'
+    },
+    flowchart: { curve: 'basis' },
+    sequence: { actorMargin: 60 }
   });
-
-  // collapse
-  document.querySelectorAll('.layer-header').forEach(h => {
-    h.addEventListener('click', () => {
-      h.closest('.layer').classList.toggle('collapsed');
-    });
-  });
-
-  // drawer
-  const drawer = document.getElementById('drawer');
-  const overlay = document.getElementById('overlay');
-  const drawerBody = document.getElementById('drawerBody');
-
-  function openDrawer(layer, item){
-    drawerBody.innerHTML = `
-      <div class="drawer-tag c-${layer.color}" style="background:var(--accent-soft); color:var(--accent)">${svgIcon(item.icon,12)} ${layer.title}</div>
-      <h3 class="display">${item.name}</h3>
-      <div class="drawer-file mono">${item.file}</div>
-      <div class="drawer-section">
-        <h4>Purpose</h4>
-        <p>${item.purpose}</p>
-      </div>
-      <div class="drawer-section">
-        <h4>Data Flow</h4>
-        <div class="io-grid">
-          <div class="io-box"><span>Inputs</span><p>${item.inputs}</p></div>
-          <div class="io-box"><span>Outputs</span><p>${item.outputs}</p></div>
-        </div>
-      </div>
-      <div class="drawer-section">
-        <h4>Technologies</h4>
-        <div class="card-badges">${item.badges.map(b=>`<span class="badge">${b}</span>`).join('')}</div>
-      </div>
-    `;
-    drawer.classList.add('open');
-    overlay.classList.add('open');
-  }
-  function closeDrawer(){
-    drawer.classList.remove('open');
-    overlay.classList.remove('open');
-  }
-  document.getElementById('drawerClose').addEventListener('click', closeDrawer);
-  overlay.addEventListener('click', closeDrawer);
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawer(); });
-
-  // theme
-  const root = document.documentElement;
-  const themeBtn = document.getElementById('themeBtn');
-  const themeLabel = document.getElementById('themeLabel');
-  let dark = true;
-  themeBtn.addEventListener('click', () => {
-    dark = !dark;
-    root.setAttribute('data-theme', dark ? 'dark' : 'light');
-    themeLabel.textContent = dark ? 'Dark' : 'Light';
-  });
-
-  // zoom
-  const zoomStage = document.getElementById('zoomStage');
-  const zLabel = document.getElementById('zLabel');
-  let zoom = 1;
-  function applyZoom(){ zoomStage.style.transform = `scale(${zoom})`; zLabel.textContent = Math.round(zoom*100) + '%'; }
-  document.getElementById('zIn').addEventListener('click', () => { zoom = Math.min(1.3, zoom + 0.1); applyZoom(); });
-  document.getElementById('zOut').addEventListener('click', () => { zoom = Math.max(0.6, zoom - 0.1); applyZoom(); });
-  document.getElementById('zReset').addEventListener('click', () => { zoom = 1; applyZoom(); });
-
-  // print
-  document.getElementById('printBtn').addEventListener('click', () => {
-    document.querySelectorAll('.layer.collapsed').forEach(l => l.classList.remove('collapsed'));
-    window.print();
-  });
-})();
 </script>
+</body>
+</html>

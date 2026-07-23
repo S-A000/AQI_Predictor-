@@ -3,34 +3,29 @@ build_features.py
 ===================
 Suggested path: src/feature_engineering/build_features.py
 
-Phase 3 orchestrator — runs all 8 parts in the correct order and
-produces the final model-ready dataset, mirroring how
-build_training_dataset.py orchestrates Phase 5.
+Phase 3 orchestrator — runs all 8 feature-engineering parts, THEN
+creates the multi-horizon forecast targets, THEN splits and scales.
 
-ORDER MATTERS:
-    1. Temporal       — no dependencies
-    2. Lag             — no dependencies (needs sorted city+timestamp,
-                         which every module already enforces itself)
-    3. Rolling         — no dependencies
-    4. Trend           — no dependencies
-    5. Interaction     — no dependencies (row-wise on raw columns)
-    6. Air Quality     — no dependencies (row-wise on raw columns)
-    7. Spatial         — no dependencies (row-wise on raw columns)
-    8. Scaling/Encoding — MUST run LAST: it scales/drops columns
-                         produced by parts 1-7, and its scaler must
-                         be fit ONLY on the training split.
+ORDER:
+    1-7. Temporal, Lag, Rolling, Trend, Interaction, Air Quality, Spatial
+    8.   Forecast targets (target_aqi_t+24, t+48, t+72 — see
+         src/training/forecast_targets.py)
+    9.   Chronological split (70/15/15)
+    10.  Scaling/Encoding — fit on train only
 
-Chronological train/val/test split (70/15/15, matching the split
-your EDA already validated) happens BEFORE scaling — scaling needs
-to know which rows are "training" to fit on.
-
-Output (data/training/):
-    features_train.parquet   <- scaled, model-ready
-    features_val.parquet
-    features_test.parquet
-    scaler.joblib             <- fitted on train only, reusable at
-                                 prediction time (Phase 9)
-    feature_build_report.json <- what was scaled/dropped and why
+IMPORTANT — warm-up NaN dropping vs target NaN dropping (DO NOT MERGE):
+    Lag/rolling features are NaN for the first ~168 rows per city
+    (not enough history yet) — those rows are genuinely unusable and
+    dropped here.
+    Forecast targets are NaN for the LAST up-to-72 rows per city
+    (not enough FUTURE data yet for the largest horizon) — those
+    rows are only unusable for the LARGER horizons, not all of them,
+    so they are deliberately NOT dropped here. Per-horizon target-NaN
+    dropping happens later, in src/training/dataset.py, at load time
+    — once we know which specific horizon is being trained for. If
+    this file dropped rows with ANY target NaN, we'd needlessly lose
+    valid 24h-horizon training data just because the 72h target
+    wasn't available for the same row.
 """
 
 from __future__ import annotations
@@ -50,6 +45,7 @@ from src.feature_engineering.scaling_encoding import ScalingEncodingEngineer
 from src.feature_engineering.spatial_features import SpatialFeatureEngineer
 from src.feature_engineering.temporal_features import TemporalFeatureEngineer
 from src.feature_engineering.trend_features import TrendFeatureEngineer
+from src.training.forecast_targets import ForecastTargetBuilder
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -66,12 +62,6 @@ def _chronological_split(
     train_pct: float = 0.70,
     val_pct: float = 0.15,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Splits chronologically (NOT randomly) — same 70/15/15 split your
-    EDA report already used. Random splitting would leak future
-    information into training via nearby-in-time rows ending up on
-    both sides of the split; a strict time cutoff avoids that.
-    """
     df = df.sort_values(timestamp_col).reset_index(drop=True)
     n = len(df)
     train_end = int(n * train_pct)
@@ -82,17 +72,13 @@ def _chronological_split(
     test_df = df.iloc[val_end:]
 
     logger.info(
-        "Chronological split: train=%d (%s -> %s), val=%d (%s -> %s), test=%d (%s -> %s)",
-        len(train_df), train_df[timestamp_col].min(), train_df[timestamp_col].max(),
-        len(val_df), val_df[timestamp_col].min(), val_df[timestamp_col].max(),
-        len(test_df), test_df[timestamp_col].min(), test_df[timestamp_col].max(),
+        "Chronological split: train=%d, val=%d, test=%d", len(train_df), len(val_df), len(test_df),
     )
-
     return train_df, val_df, test_df
 
 
 def build_all_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Runs Parts 1-7 (everything except scaling) in order."""
+    """Runs Parts 1-7 (feature engineering only, no targets)."""
     logger.info("Starting Phase 3 feature engineering: %d row(s), %d column(s) in.", *df.shape)
 
     df = TemporalFeatureEngineer().build(df)
@@ -118,67 +104,66 @@ def build_features_pipeline(
     logger.info("Loading %s", input_path)
     df = pd.read_parquet(input_path)
 
-    # --------------------------------------------------
     # Parts 1-7
-    # --------------------------------------------------
     df = build_all_features(df)
 
-    # --------------------------------------------------
-    # Chronological split (before scaling, so the scaler only
-    # ever sees the training portion)
-    # --------------------------------------------------
+    # Multi-horizon forecast targets (target_aqi_t+24/48/72)
+    target_builder = ForecastTargetBuilder()
+    df = target_builder.build(df)
+    target_columns = target_builder.all_target_columns()
+
+    # Chronological split (targets included as normal columns for now —
+    # horizon selection happens later in dataset.py)
     train_df, val_df, test_df = _chronological_split(df)
 
     if drop_warmup_nans:
-        # Lag/rolling features are NaN for the first N rows per city
-        # (not enough history yet) — drop rows with ANY NaN in the
-        # engineered feature columns before fitting/scaling, rather
-        # than silently imputing invented values into what should be
-        # real historical signal.
+        # CRITICAL: only drop rows with NaN in FEATURE columns (lag/
+        # rolling warm-up), never based on the target columns — see
+        # module docstring. Explicitly exclude target_columns from
+        # the NaN check.
         before = len(train_df)
-        train_df = train_df.dropna()
+        train_df = train_df.dropna(subset=[c for c in train_df.columns if c not in target_columns])
         logger.info("Dropped %d warm-up/NaN row(s) from train split (%d -> %d).", before - len(train_df), before, len(train_df))
-        val_df = val_df.dropna()
-        test_df = test_df.dropna()
 
-    # --------------------------------------------------
-    # Part 8 — fit ONLY on train, transform all three splits
-    # --------------------------------------------------
-    scaler_engineer = ScalingEncodingEngineer()
-    train_scaled, report = scaler_engineer.fit_transform(train_df)
+        val_df = val_df.dropna(subset=[c for c in val_df.columns if c not in target_columns])
+        test_df = test_df.dropna(subset=[c for c in test_df.columns if c not in target_columns])
+
+    # Part 8 (Scaling) — fit ONLY on train, transform all three splits.
+    # ScalingEncodingEngineer must be told about ALL target columns so
+    # none of them get scaled — none of the 3 are "the" target at this
+    # stage, since horizon selection happens later at load time.
+    scaler_engineer = ScalingEncodingEngineer(target_columns=target_columns)
+    train_scaled = scaler_engineer.fit_transform(train_df)
     val_scaled = scaler_engineer.transform(val_df)
     test_scaled = scaler_engineer.transform(test_df)
 
-    # --------------------------------------------------
-    # Save outputs
-    # --------------------------------------------------
     paths = {
         "train": output_dir / "features_train.parquet",
         "val": output_dir / "features_val.parquet",
         "test": output_dir / "features_test.parquet",
-        "scaler": output_dir / "scaler.joblib",
-        "report": output_dir / "feature_build_report.json",
     }
 
     train_scaled.to_parquet(paths["train"], index=False)
     val_scaled.to_parquet(paths["val"], index=False)
     test_scaled.to_parquet(paths["test"], index=False)
-    scaler_engineer.save(paths["scaler"])
 
-    report_dict = report.to_dict()
-    report_dict["split_sizes"] = {"train": len(train_scaled), "val": len(val_scaled), "test": len(test_scaled)}
-    paths["report"].write_text(json.dumps(report_dict, indent=2, default=str), encoding="utf-8")
+    summary = {
+        "target_columns": target_columns,
+        "split_sizes": {"train": len(train_scaled), "val": len(val_scaled), "test": len(test_scaled)},
+        "final_columns": len(train_scaled.columns),
+    }
+    (output_dir / "feature_build_report.json").write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
 
     logger.info(
-        "Phase 3 complete: train=%d, val=%d, test=%d, %d final feature(s). Saved to %s",
-        len(train_scaled), len(val_scaled), len(test_scaled), report.final_feature_count, output_dir,
+        "Phase 3 complete: train=%d, val=%d, test=%d, targets=%s. Saved to %s",
+        len(train_scaled), len(val_scaled), len(test_scaled), target_columns, output_dir,
     )
 
     return paths
 
 
 def _main() -> int:
-    parser = argparse.ArgumentParser(description="Build final Phase 3 features (all 8 parts)")
+    parser = argparse.ArgumentParser(description="Build final Phase 3 features + multi-horizon targets")
     parser.add_argument("--keep-warmup-nans", action="store_true", help="Don't drop lag/rolling warm-up NaN rows.")
     args = parser.parse_args()
 
@@ -187,7 +172,6 @@ def _main() -> int:
     except FileNotFoundError as exc:
         logger.error("Failed to build features: %s", exc)
         return 1
-
     return 0
 
 

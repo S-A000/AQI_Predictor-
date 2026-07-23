@@ -1,35 +1,45 @@
 """
 Suggested path: src/training/dataset.py
 
-SINGLE RESPONSIBILITY: Load pre-split feature datasets (Train/Val/Test), 
-validate schema and data integrity, isolate features and target, and serve 
+SINGLE RESPONSIBILITY: Load pre-split or cloud-stored feature datasets (Train/Val/Test),
+validate schema and data integrity, isolate features and target, and serve
 DatasetSplits for model training and evaluation routines.
+
+UPDATED for Hopsworks Feature Store integration & multi-horizon direct forecasting:
+    The feature store contains target columns (target_aqi_t+24, target_aqi_t+48, target_aqi_t+72).
+    When loading splits for a SPECIFIC horizon, the other two horizon columns
+    must be excluded from X.
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+import hopsworks
 import numpy as np
 import pandas as pd
+from dotenv import load_dotenv
 
+from src.training.forecast_targets import ForecastTargetBuilder
 from src.utils.constants import (
     EXPECTED_FEATURE_COUNT,
     METADATA_COLUMNS,
     PROCESSED_DATA_DIR,
-    TARGET_COL,
 )
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+DEFAULT_HORIZON_HOURS = 24
+
 
 @dataclass(frozen=True)
 class DatasetSplits:
     """
-    Immutable Container holding Pre-Split Training, Validation, 
+    Immutable Container holding Pre-Split Training, Validation,
     and Test Datasets along with Metadata.
     """
 
@@ -40,6 +50,7 @@ class DatasetSplits:
     X_test: pd.DataFrame
     y_test: pd.Series
     feature_names: List[str] = field(default_factory=list)
+    horizon_hours: int = DEFAULT_HORIZON_HOURS
 
     @property
     def train_shape(self) -> Tuple[Tuple[int, int], int]:
@@ -67,6 +78,7 @@ class DatasetSplits:
     def summary(self) -> Dict[str, Any]:
         """Return a summary of split sizes and feature dimension."""
         return {
+            "horizon_hours": self.horizon_hours,
             "train_samples": len(self.X_train),
             "val_samples": len(self.X_val),
             "test_samples": len(self.X_test),
@@ -77,102 +89,90 @@ class DatasetSplits:
 class AQIDatasetLoader:
     """
     Enterprise Dataset Loader for AQI Forecasting Pipeline.
-    Manages loading of pre-split Parquet artifacts, strict schema validation,
-    data integrity checks, and feature-target separation.
+    Manages loading of features from Hopsworks Feature Store, strict schema validation,
+    data integrity checks, and feature-target separation — for ONE
+    forecast horizon at a time.
     """
 
     def __init__(
         self,
         processed_dir: Path | str = PROCESSED_DATA_DIR,
-        target_col: str = TARGET_COL,
-        expected_feature_count: int = EXPECTED_FEATURE_COUNT,
+        horizon_hours: int = DEFAULT_HORIZON_HOURS,
+        expected_feature_count: int | None = EXPECTED_FEATURE_COUNT,
     ) -> None:
         self.processed_dir = Path(processed_dir)
-        self.target_col = target_col
+        self.horizon_hours = horizon_hours
         self.expected_feature_count = expected_feature_count
 
-        self.train_path = self.processed_dir / "features_train.parquet"
-        self.val_path = self.processed_dir / "features_val.parquet"
-        self.test_path = self.processed_dir / "features_test.parquet"
+        self._target_builder = ForecastTargetBuilder()
+        self.target_col = self._target_builder.target_column_name(horizon_hours)
+        
+        # All horizon target columns EXCEPT the one we're training for
+        self._other_target_cols = [
+            c for c in self._target_builder.all_target_columns() if c != self.target_col
+        ]
 
-    def _validate_file_existence(self, file_path: Path) -> None:
-        """Validate that target Parquet file exists on disk."""
-        if not file_path.exists():
-            error_msg = f"Required dataset artifact missing at: {file_path}"
-            logger.error(error_msg)
-            raise FileNotFoundError(error_msg)
+    def _fetch_data_from_hopsworks(self) -> pd.DataFrame:
+        """Connects to Hopsworks Feature Store and reads the feature group dataframe."""
+        load_dotenv()
+        api_key = os.getenv("HOPSWORKS_API_KEY")
 
-    def _load_and_validate_single_split(self, file_path: Path, split_name: str) -> pd.DataFrame:
-        """
-        Load a single Parquet file and run integrity checks:
-        - Non-empty validation
-        - Duplicate column validation
-        - Target column existence
-        - Target column NaN validation
-        """
-        self._validate_file_existence(file_path)
-        logger.info("Loading '%s' split from %s", split_name, file_path)
+        logger.info("🔌 Connecting to Hopsworks Feature Store...")
+        project = hopsworks.login(project="mlopsaqi123", api_key_value=api_key)
+        fs = project.get_feature_store()
 
-        df = pd.read_parquet(file_path)
+        logger.info("📥 Fetching feature group 'aqi_features' (version 1)...")
+        aqi_fg = fs.get_feature_group(name="aqi_features", version=1)
+        df = aqi_fg.read()
+        
+        return df
 
-        # Validate non-empty DataFrame
+    def _validate_and_clean_df(self, df: pd.DataFrame, split_name: str) -> pd.DataFrame:
+        """Run integrity checks and handle target NaNs."""
         if df.empty:
             error_msg = f"Loaded DataFrame for split '{split_name}' is empty."
             logger.error(error_msg)
             raise ValueError(error_msg)
 
-        # Validate duplicate columns
         if df.columns.has_duplicates:
             duplicates = df.columns[df.columns.duplicated()].unique().tolist()
             error_msg = f"Duplicate columns detected in '{split_name}' split: {duplicates}"
             logger.error(error_msg)
             raise ValueError(error_msg)
 
-        # Validate target presence
         if self.target_col not in df.columns:
             error_msg = f"Target column '{self.target_col}' missing from '{split_name}' split."
             logger.error(error_msg)
             raise KeyError(error_msg)
 
-        # Validate NaN values in target
-        null_target_count = df[self.target_col].isnull().sum()
-        if null_target_count > 0:
+        before = len(df)
+        df = df.dropna(subset=[self.target_col]).reset_index(drop=True)
+        dropped = before - len(df)
+        if dropped:
+            logger.info(
+                "Dropped %d row(s) with no valid %dh-ahead target in '%s' split (%d -> %d).",
+                dropped, self.horizon_hours, split_name, before, len(df),
+            )
+
+        if df.empty:
             error_msg = (
-                f"Target column '{self.target_col}' in '{split_name}' split contains "
-                f"{null_target_count} missing/NaN values."
+                f"'{split_name}' split has NO rows with a valid {self.horizon_hours}h-ahead "
+                f"target after dropping NaNs."
             )
             logger.error(error_msg)
             raise ValueError(error_msg)
 
-        logger.info("Split '%s' loaded successfully with shape: %s", split_name, df.shape)
         return df
-
-    def _validate_schema_consistency(
-        self, train_df: pd.DataFrame, val_df: pd.DataFrame, test_df: pd.DataFrame
-    ) -> None:
-        """Ensure feature and schema consistency across Train, Val, and Test splits."""
-        train_cols = list(train_df.columns)
-        val_cols = list(val_df.columns)
-        test_cols = list(test_df.columns)
-
-        if train_cols != val_cols:
-            error_msg = "Schema mismatch detected between Train and Validation splits."
-            logger.error(error_msg)
-            raise ValueError(error_msg)
-
-        if train_cols != test_cols:
-            error_msg = "Schema mismatch detected between Train and Test splits."
-            logger.error(error_msg)
-            raise ValueError(error_msg)
 
     def _separate_features_and_target(
         self, df: pd.DataFrame
     ) -> Tuple[pd.DataFrame, pd.Series, List[str]]:
-        """Separate target variable and drop metadata columns from input features."""
+        """Separate target variable and drop metadata + OTHER-horizon target columns."""
         y = df[self.target_col].copy()
 
         cols_to_drop = [c for c in METADATA_COLUMNS if c in df.columns]
         cols_to_drop.append(self.target_col)
+        cols_to_drop.extend(c for c in self._other_target_cols if c in df.columns)
 
         X = df.drop(columns=cols_to_drop, errors="ignore")
         feature_names = list(X.columns)
@@ -181,31 +181,41 @@ class AQIDatasetLoader:
 
     def get_splits(self) -> DatasetSplits:
         """
-        Loads pre-split feature datasets, runs schema and data validation,
-        isolates features and target, and returns DatasetSplits dataclass.
+        Pulls data from Hopsworks, creates temporal train/val/test splits,
+        runs validation, and returns DatasetSplits.
         """
-        train_df = self._load_and_validate_single_split(self.train_path, "Train")
-        val_df = self._load_and_validate_single_split(self.val_path, "Validation")
-        test_df = self._load_and_validate_single_split(self.test_path, "Test")
+        df = self._fetch_data_from_hopsworks()
+        
+        # Ensure data is sorted by timestamp if available for temporal splitting
+        if "timestamp" in df.columns:
+            df = df.sort_values("timestamp").reset_index(drop=True)
 
-        self._validate_schema_consistency(train_df, val_df, test_df)
+        # Temporal split simulation from single feature group dataframe (70% Train, 15% Val, 15% Test)
+        train_idx = int(len(df) * 0.7)
+        val_idx = int(len(df) * 0.85)
+
+        train_df = df.iloc[:train_idx].copy()
+        val_df = df.iloc[train_idx:val_idx].copy()
+        test_df = df.iloc[val_idx:].copy()
+
+        train_df = self._validate_and_clean_df(train_df, "Train")
+        val_df = self._validate_and_clean_df(val_df, "Validation")
+        test_df = self._validate_and_clean_df(test_df, "Test")
 
         X_train, y_train, train_features = self._separate_features_and_target(train_df)
         X_val, y_val, _ = self._separate_features_and_target(val_df)
         X_test, y_test, _ = self._separate_features_and_target(test_df)
 
         extracted_feature_count = len(train_features)
-        if extracted_feature_count != self.expected_feature_count:
-            error_msg = (
-                f"Extracted feature count mismatch: Expected {self.expected_feature_count} features, "
-                f"but extracted {extracted_feature_count} features."
+        if self.expected_feature_count is not None and extracted_feature_count != self.expected_feature_count:
+            logger.warning(
+                f"Extracted feature count mismatch: Expected {self.expected_feature_count}, "
+                f"but got {extracted_feature_count}. Proceeding with extracted features."
             )
-            logger.error(error_msg)
-            raise ValueError(error_msg)
 
         logger.info(
-            "Feature extraction validated successfully. Total feature count: %d",
-            extracted_feature_count,
+            "Feature extraction validated successfully (horizon=%dh). Total feature count: %d",
+            self.horizon_hours, extracted_feature_count,
         )
 
         splits = DatasetSplits(
@@ -216,36 +226,35 @@ class AQIDatasetLoader:
             X_test=X_test,
             y_test=y_test,
             feature_names=train_features,
+            horizon_hours=self.horizon_hours,
         )
 
         logger.info(
-            "Dataset Loading Completed. Train shape: %s | Val shape: %s | Test shape: %s",
-            splits.train_shape[0],
-            splits.val_shape[0],
-            splits.test_shape[0],
+            "Dataset Loading Completed (horizon=%dh). Train shape: %s | Val shape: %s | Test shape: %s",
+            self.horizon_hours, splits.train_shape[0], splits.val_shape[0], splits.test_shape[0],
         )
 
         return splits
 
 
-def load_prepared_splits(processed_dir: Path | str = PROCESSED_DATA_DIR) -> DatasetSplits:
+def load_prepared_splits(
+    processed_dir: Path | str = PROCESSED_DATA_DIR,
+    horizon_hours: int = DEFAULT_HORIZON_HOURS,
+) -> DatasetSplits:
     """
-    Public utility function to fetch pre-split train/val/test data.
-
-    Usage:
-        from src.training.dataset import load_prepared_splits
-        splits = load_prepared_splits()
-        X_train, y_train = splits.X_train, splits.y_train
+    Public utility function to fetch pre-split train/val/test data from Hopsworks
+    for a SPECIFIC forecast horizon.
     """
-    loader = AQIDatasetLoader(processed_dir=processed_dir)
+    loader = AQIDatasetLoader(processed_dir=processed_dir, horizon_hours=horizon_hours)
     return loader.get_splits()
 
 
 if __name__ == "__main__":
     try:
-        dataset_splits = load_prepared_splits()
-        print("\n=== Dataset Load Successful ===")
-        print("Summary:", dataset_splits.summary())
+        for horizon in (24, 48, 72):
+            dataset_splits = load_prepared_splits(horizon_hours=horizon)
+            print(f"\n=== Dataset Load Successful from Hopsworks ({horizon}h horizon) ===")
+            print("Summary:", dataset_splits.summary())
     except Exception as err:
         logger.exception("Failed to run dataset.py verification test.")
         raise

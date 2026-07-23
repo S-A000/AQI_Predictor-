@@ -8,6 +8,7 @@ metrics, and auto-register the best performing model into MLflow Model Registry.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 from typing import Any, Dict, Tuple
@@ -21,7 +22,7 @@ import pandas as pd
 # 🔥 FAST Multi-threaded Imports
 from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
 from sklearn.linear_model import Ridge
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 from src.training.dataset import DatasetSplits, load_prepared_splits
 from src.utils.constants import MODELS_DIR
@@ -29,9 +30,9 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# MLflow Experiment Configuration
-EXPERIMENT_NAME = "AQI_Forecasting_Model_Comparison"
-REGISTERED_MODEL_NAME = "AQI_Forecaster_Production"
+# MLflow Base Configuration Templates
+EXPERIMENT_NAME_TEMPLATE = "AQI_Model_Comparison_{horizon_hours}H"
+REGISTERED_MODEL_NAME_TEMPLATE = "AQI_Forecaster_{horizon_hours}H"
 
 
 class MultiModelTrainer:
@@ -39,9 +40,8 @@ class MultiModelTrainer:
     Automated Multi-Model Training and MLflow Registry Pipeline.
     """
 
-    def __init__(self, experiment_name: str = EXPERIMENT_NAME) -> None:
+    def __init__(self, experiment_name: str | None = None) -> None:
         self.experiment_name = experiment_name
-        mlflow.set_experiment(self.experiment_name)
 
     def _get_candidate_models(self) -> Dict[str, Any]:
         """Returns optimized candidate model architectures for fast execution."""
@@ -61,12 +61,19 @@ class MultiModelTrainer:
             "r2": float(r2_score(y, preds)),
         }
 
-    def train_and_evaluate_all(self, splits: DatasetSplits) -> Tuple[str, float, Any]:
+    def train_and_evaluate_all(
+        self, splits: DatasetSplits, horizon_hours: int
+    ) -> Tuple[str, float, Any]:
         """
         Trains all candidate models, logs runs to MLflow, compares performance,
-        and identifies the best performing model.
+        and identifies the best performing model for a specific horizon.
         """
-        logger.info("Starting Multi-Model Benchmark & MLflow Experiment Tracking...")
+        exp_name = self.experiment_name or EXPERIMENT_NAME_TEMPLATE.format(horizon_hours=horizon_hours)
+        mlflow.set_experiment(exp_name)
+
+        registered_model_name = REGISTERED_MODEL_NAME_TEMPLATE.format(horizon_hours=horizon_hours)
+
+        logger.info("Starting Multi-Model Benchmark & MLflow Experiment Tracking for %dH Horizon...", horizon_hours)
         candidate_models = self._get_candidate_models()
 
         best_model_name = ""
@@ -76,9 +83,9 @@ class MultiModelTrainer:
 
         for model_name, model_instance in candidate_models.items():
             logger.info("--------------------------------------------------")
-            logger.info("Training Candidate Model: %s", model_name)
+            logger.info("Training Candidate Model: %s (%dH Horizon)", model_name, horizon_hours)
 
-            with mlflow.start_run(run_name=model_name) as run:
+            with mlflow.start_run(run_name=f"{model_name}_{horizon_hours}H") as run:
                 # 1. Fit Model
                 model_instance.fit(splits.X_train, splits.y_train)
 
@@ -86,12 +93,16 @@ class MultiModelTrainer:
                 val_metrics = self._evaluate_model(model_instance, splits.X_val, splits.y_val)
                 test_metrics = self._evaluate_model(model_instance, splits.X_test, splits.y_test)
 
-                logger.info("[%s] Val RMSE: %.4f | Test RMSE: %.4f | Test R²: %.4f", 
-                            model_name, val_metrics["rmse"], test_metrics["rmse"], test_metrics["r2"])
+                logger.info(
+                    "[%s - %dH] Val RMSE: %.4f | Test RMSE: %.4f | Test R²: %.4f", 
+                    model_name, horizon_hours, val_metrics["rmse"], test_metrics["rmse"], test_metrics["r2"]
+                )
 
                 # 3. Log Parameters and Metrics to MLflow
                 if hasattr(model_instance, "get_params"):
                     mlflow.log_params(model_instance.get_params())
+
+                mlflow.log_param("horizon_hours", horizon_hours)
 
                 mlflow.log_metric("val_rmse", val_metrics["rmse"])
                 mlflow.log_metric("val_mae", val_metrics["mae"])
@@ -118,65 +129,72 @@ class MultiModelTrainer:
                     best_run_id = run.info.run_id
 
         logger.info("==================================================")
-        logger.info("WINNING MODEL: %s with Test RMSE: %.4f", best_model_name, best_test_rmse)
+        logger.info("WINNING MODEL [%dH]: %s with Test RMSE: %.4f", horizon_hours, best_model_name, best_test_rmse)
         logger.info("==================================================")
 
         # Step 6: Register the Best Model in MLflow Model Registry
-        self._register_best_model(best_run_id, best_model_name)
+        self._register_best_model(best_run_id, best_model_name, registered_model_name)
 
         # Step 7: Save Best Model locally to models/registry/
-        self._save_best_model_locally(best_model_artifact, best_model_name, splits, best_test_rmse)
+        self._save_best_model_locally(best_model_artifact, best_model_name, splits, best_test_rmse, horizon_hours)
 
         return best_model_name, best_test_rmse, best_model_artifact
 
-    def _register_best_model(self, run_id: str, model_name: str) -> None:
+    def _register_best_model(self, run_id: str, model_name: str, registered_model_name: str) -> None:
         """Registers the winning model run into MLflow Model Registry."""
         model_uri = f"runs:/{run_id}/model"
-        logger.info("Registering '%s' (Run ID: %s) to MLflow Model Registry under name '%s'...",
-                    model_name, run_id, REGISTERED_MODEL_NAME)
+        logger.info(
+            "Registering '%s' (Run ID: %s) to MLflow Model Registry under name '%s'...",
+            model_name, run_id, registered_model_name
+        )
 
         try:
             registered_model = mlflow.register_model(
                 model_uri=model_uri,
-                name=REGISTERED_MODEL_NAME,
+                name=registered_model_name,
             )
             logger.info("Successfully registered model version %s in MLflow Model Registry!", registered_model.version)
         except Exception as err:
             logger.error("Failed to register model in MLflow Registry: %s", err)
 
     def _save_best_model_locally(
-        self, model: Any, model_name: str, splits: DatasetSplits, test_rmse: float
+        self, model: Any, model_name: str, splits: DatasetSplits, test_rmse: float, horizon_hours: int
     ) -> None:
         """Saves winning model and metadata to local disk directory for predictor compatibility."""
         registry_dir = MODELS_DIR / "registry"
         registry_dir.mkdir(parents=True, exist_ok=True)
 
-        model_path = registry_dir / "ridge_baseline.joblib"  # Primary active model name
-        metadata_path = registry_dir / "ridge_metadata.json"
+        model_path = registry_dir / f"{horizon_hours}h_model.joblib"
+        metadata_path = registry_dir / f"{horizon_hours}h_metadata.json"
 
         joblib.dump(model, model_path)
 
         metadata = {
-            "model_name": model_name,
             "model_version": "1.0.0",
             "algorithm": model_name,
-            "best_test_rmse": round(test_rmse, 4),
+            "horizon_hours": horizon_hours,
             "feature_names": splits.feature_names,
             "feature_count": len(splits.feature_names),
+            "best_test_rmse": round(test_rmse, 4),
+            "training_timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
         with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=4)
 
-        logger.info("Saved local production model artifact and metadata to: %s", registry_dir)
+        logger.info("Saved local production model artifact and metadata for %dH to: %s", horizon_hours, registry_dir)
 
 
 if __name__ == "__main__":
     try:
-        splits = load_prepared_splits()
-        trainer = MultiModelTrainer()
-        winner_name, winner_rmse, _ = trainer.train_and_evaluate_all(splits)
-        print(f"\n🎉 Multi-Model Training Complete! Winner: {winner_name} (RMSE: {winner_rmse:.4f})")
+        for horizon in [24, 48, 72]:
+            logger.info("==================================================")
+            logger.info("Executing Pipeline for Horizon: %dH", horizon)
+            logger.info("==================================================")
+            splits = load_prepared_splits(horizon_hours=horizon)
+            trainer = MultiModelTrainer()
+            winner_name, winner_rmse, _ = trainer.train_and_evaluate_all(splits, horizon_hours=horizon)
+            print(f"\n🎉 Multi-Model Training Complete for {horizon}H! Winner: {winner_name} (RMSE: {winner_rmse:.4f})")
     except Exception as err:
         logger.exception("Multi-model training failed: %s", err)
         raise

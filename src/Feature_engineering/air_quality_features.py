@@ -72,8 +72,17 @@ class AirQualityFeatureEngineer:
         if not self._has_columns(df, self.aqi_col):
             return df
         df = df.copy()
+        # Coerce to numeric first: at prediction time 'aqi' is Optional
+        # and often arrives as Python None (not NaN) — e.g. a
+        # single-row payload where the caller doesn't know the
+        # current AQI yet. An object-dtype Series containing raw
+        # None crashes pd.cut's internal searchsorted comparison
+        # against the (numeric) bin edges; a proper float NaN does
+        # not — pd.cut just assigns it a NaN category, which is the
+        # correct/expected behavior here.
+        aqi_numeric = pd.to_numeric(df[self.aqi_col], errors="coerce")
         df["aqi_category"] = pd.cut(
-            df[self.aqi_col], bins=AQI_CATEGORY_BINS, labels=AQI_CATEGORY_LABELS,
+            aqi_numeric, bins=AQI_CATEGORY_BINS, labels=AQI_CATEGORY_LABELS,
         )
         return df
 
