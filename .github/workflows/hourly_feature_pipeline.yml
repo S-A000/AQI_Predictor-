@@ -93,7 +93,8 @@ jobs:
 
       - name: Run hourly feature pipeline
         run: |
-          python -m src.feature_pipeline.run_pipeline
+          python -c "import src.feature_engineering.pipeline_steps; print('Import working')"
+          python -m src.feature_pipeline.run_pipeline 
 
       - name: Send failure email
         if: failure()
