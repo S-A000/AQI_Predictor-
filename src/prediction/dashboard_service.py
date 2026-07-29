@@ -11,6 +11,7 @@ from src.prediction.predictor import AQIPredictor
 from src.utils.logger import get_logger
 from src.prediction.live_data_service import LiveDataService
 from src.alerts.aqi_alert_service import AQIAlertService
+from src.feature_store.bigquery_feature_store import BigQueryFeatureStore
 
 logger = get_logger(__name__)
 
@@ -44,7 +45,9 @@ class DashboardForecastService:
         self.explainer = explainer or DashboardExplainer(predictor=self.predictor)
         self.live_data_service = LiveDataService()
         self.aqi_alert_service = AQIAlertService()
+        self.bigquery_store = BigQueryFeatureStore()
         self.use_live_api = True
+        self.use_bigquery = True
 
     @staticmethod
     def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
@@ -162,18 +165,70 @@ class DashboardForecastService:
 
     def _load_prediction_context(self) -> pd.DataFrame:
         """
-        Keep last 72 rows per city for lag/rolling feature generation.
+        Load the latest 72 feature rows per city.
+
+        Primary source:
+            BigQuery feature repository.
+
+        Fallback:
+            Local training_dataset.parquet.
         """
+        if self.use_bigquery:
+            try:
+                city_frames: List[pd.DataFrame] = []
+
+                for city in SUPPORTED_CITIES:
+                    city_context = self.bigquery_store.get_latest_context(
+                        city=city,
+                        rows=72,
+                    )
+                    city_frames.append(city_context)
+
+                context_df = pd.concat(
+                    city_frames,
+                    ignore_index=True,
+                )
+
+                if context_df.empty:
+                    raise ValueError(
+                        "BigQuery prediction context is empty."
+                    )
+
+                logger.info(
+                    "Prediction context loaded from BigQuery | cities=%s | rows=%s",
+                    SUPPORTED_CITIES,
+                    len(context_df),
+                )
+
+                return context_df
+
+            except Exception as err:
+                logger.warning(
+                    "BigQuery context loading failed. "
+                    "Falling back to local Parquet. Error: %s",
+                    err,
+                )
+
         full_df = self._load_full_context()
 
         context_df = (
-            full_df.groupby(full_df["city"].astype(str).str.lower(), group_keys=False)
+            full_df.groupby(
+                full_df["city"].astype(str).str.lower(),
+                group_keys=False,
+            )
             .tail(72)
             .copy()
         )
 
         if context_df.empty:
-            raise ValueError("Failed to build prediction context.")
+            raise ValueError(
+                "Failed to build local prediction context."
+            )
+
+        logger.info(
+            "Prediction context loaded from local Parquet | rows=%s",
+            len(context_df),
+        )
 
         return context_df
 
