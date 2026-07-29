@@ -21,11 +21,13 @@ jobs:
 
     env:
       PYTHONUNBUFFERED: "1"
+      PYTHONPATH: ${{ github.workspace }}
 
       GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       BIGQUERY_DATASET_ID: ${{ secrets.BIGQUERY_DATASET_ID }}
       BIGQUERY_FEATURE_TABLE: ${{ secrets.BIGQUERY_FEATURE_TABLE }}
       BIGQUERY_LOCATION: ${{ secrets.BIGQUERY_LOCATION }}
+      
 
       AQICN_API_KEY: ${{ secrets.AQICN_API_KEY }}
       OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
