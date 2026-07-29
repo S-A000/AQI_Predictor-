@@ -1,0 +1,113 @@
+name: Hourly AQI Feature Pipeline
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    - cron: "17 * * * *"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: hourly-aqi-feature-pipeline
+  cancel-in-progress: false
+
+jobs:
+  hourly-feature-pipeline:
+    name: Generate and Store AQI Features
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      PYTHONUNBUFFERED: "1"
+
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      BIGQUERY_DATASET_ID: ${{ secrets.BIGQUERY_DATASET_ID }}
+      BIGQUERY_FEATURE_TABLE: ${{ secrets.BIGQUERY_FEATURE_TABLE }}
+      BIGQUERY_LOCATION: ${{ secrets.BIGQUERY_LOCATION }}
+
+      AQICN_API_KEY: ${{ secrets.AQICN_API_KEY }}
+      OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+
+      ALERT_SMTP_HOST: ${{ secrets.ALERT_SMTP_HOST }}
+      ALERT_SMTP_PORT: ${{ secrets.ALERT_SMTP_PORT }}
+      ALERT_SMTP_USE_TLS: ${{ secrets.ALERT_SMTP_USE_TLS }}
+      ALERT_SMTP_USERNAME: ${{ secrets.ALERT_SMTP_USERNAME }}
+      ALERT_SMTP_PASSWORD: ${{ secrets.ALERT_SMTP_PASSWORD }}
+      ALERT_FROM_EMAIL: ${{ secrets.ALERT_FROM_EMAIL }}
+      ALERT_TO_EMAILS: ${{ secrets.ALERT_TO_EMAILS }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+
+          required_variables = [
+              "GCP_PROJECT_ID",
+              "BIGQUERY_DATASET_ID",
+              "BIGQUERY_FEATURE_TABLE",
+              "BIGQUERY_LOCATION",
+              "AQICN_API_KEY",
+              "OPENWEATHER_API_KEY",
+          ]
+
+          missing_variables = [
+              name
+              for name in required_variables
+              if not os.getenv(name)
+          ]
+
+          if missing_variables:
+              raise RuntimeError(
+                  f"Missing required secrets: {missing_variables}"
+              )
+
+          print("All required configuration is available.")
+          PY
+
+      - name: Run hourly feature pipeline
+        run: |
+          python -m src.feature_pipeline.run_pipeline
+
+      - name: Send failure email
+        if: failure()
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          from src.alerts.email_alert_service import EmailAlertService
+
+          EmailAlertService().send_alert(
+              title="Hourly AQI Feature Pipeline Failed",
+              message=(
+                  "The hourly AQI feature pipeline failed in GitHub Actions. "
+                  "Open the repository Actions tab and inspect the latest "
+                  "workflow logs."
+              ),
+              severity="critical",
+          )
+          PY
