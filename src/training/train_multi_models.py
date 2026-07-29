@@ -116,9 +116,11 @@ class MultiModelTrainer:
                 signature = infer_signature(splits.X_val, val_preds)
 
                 mlflow.sklearn.log_model(
-                    sk_model=model_instance,
-                    artifact_path="model",
-                    signature=signature,
+                sk_model=model_instance,
+                name=f"{model_name}_{horizon_hours}h_model",
+                signature=signature,
+                input_example=splits.X_val.head(5),
+                serialization_format="cloudpickle",
                 )
 
                 # 5. Check if this is the best model so far

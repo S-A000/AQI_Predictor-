@@ -13,7 +13,7 @@ scipy
 pyarrow
 fastparquet
 joblib
-
+cloudpickle
 
 # ------------------------------------------------------------
 # Configuration and validation
