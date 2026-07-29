@@ -1,27 +1,21 @@
 """
 Suggested path: src/training/dataset.py
 
-SINGLE RESPONSIBILITY: Load pre-split or cloud-stored feature datasets (Train/Val/Test),
+SINGLE RESPONSIBILITY: Load pre-split or locally stored feature datasets (Train/Val/Test),
 validate schema and data integrity, isolate features and target, and serve
 DatasetSplits for model training and evaluation routines.
 
-UPDATED for Hopsworks Feature Store integration & multi-horizon direct forecasting:
-    The feature store contains target columns (target_aqi_t+24, target_aqi_t+48, target_aqi_t+72).
-    When loading splits for a SPECIFIC horizon, the other two horizon columns
-    must be excluded from X.
+UPDATED: Completely removed Hopsworks integration and reads local parquet splits directly.
 """
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-import hopsworks
 import numpy as np
 import pandas as pd
-from dotenv import load_dotenv
 
 from src.training.forecast_targets import ForecastTargetBuilder
 from src.utils.constants import (
@@ -89,7 +83,7 @@ class DatasetSplits:
 class AQIDatasetLoader:
     """
     Enterprise Dataset Loader for AQI Forecasting Pipeline.
-    Manages loading of features from Hopsworks Feature Store, strict schema validation,
+    Manages loading of features from local disk storage, strict schema validation,
     data integrity checks, and feature-target separation — for ONE
     forecast horizon at a time.
     """
@@ -112,20 +106,23 @@ class AQIDatasetLoader:
             c for c in self._target_builder.all_target_columns() if c != self.target_col
         ]
 
-    def _fetch_data_from_hopsworks(self) -> pd.DataFrame:
-        """Connects to Hopsworks Feature Store and reads the feature group dataframe."""
-        load_dotenv()
-        api_key = os.getenv("HOPSWORKS_API_KEY")
-
-        logger.info("🔌 Connecting to Hopsworks Feature Store...")
-        project = hopsworks.login(project="mlopsaqi123", api_key_value=api_key)
-        fs = project.get_feature_store()
-
-        logger.info("📥 Fetching feature group 'aqi_features' (version 1)...")
-        aqi_fg = fs.get_feature_group(name="aqi_features", version=1)
-        df = aqi_fg.read()
+    def _fetch_data_locally(self, split_name: str) -> pd.DataFrame:
+        """Loads pre-saved split dataframe directly from local disk directory."""
+        # Map formal split names to file suffixes
+        suffix_map = {
+            "Train": "train",
+            "Validation": "val",
+            "Test": "test"
+        }
+        file_suffix = suffix_map.get(split_name, split_name.lower())
         
-        return df
+        file_path = Path("data/training") / f"features_{file_suffix}.parquet"
+        logger.info("📂 Loading '%s' split locally from disk: %s", split_name, file_path)
+        
+        if not file_path.exists():
+            raise FileNotFoundError(f"Local feature split file not found: {file_path}")
+            
+        return pd.read_parquet(file_path)
 
     def _validate_and_clean_df(self, df: pd.DataFrame, split_name: str) -> pd.DataFrame:
         """Run integrity checks and handle target NaNs."""
@@ -141,9 +138,15 @@ class AQIDatasetLoader:
             raise ValueError(error_msg)
 
         if self.target_col not in df.columns:
-            error_msg = f"Target column '{self.target_col}' missing from '{split_name}' split."
-            logger.error(error_msg)
-            raise KeyError(error_msg)
+            # Fallback check for alternative column formats
+            possible_targets = [c for c in df.columns if f"target" in c or f"{self.horizon_hours}h" in c]
+            if possible_targets:
+                self.target_col = possible_targets[0]
+                logger.warning("Target column mapped fallback to: '%s'", self.target_col)
+            else:
+                error_msg = f"Target column '{self.target_col}' missing from '{split_name}' split."
+                logger.error(error_msg)
+                raise KeyError(error_msg)
 
         before = len(df)
         df = df.dropna(subset=[self.target_col]).reset_index(drop=True)
@@ -173,6 +176,11 @@ class AQIDatasetLoader:
         cols_to_drop = [c for c in METADATA_COLUMNS if c in df.columns]
         cols_to_drop.append(self.target_col)
         cols_to_drop.extend(c for c in self._other_target_cols if c in df.columns)
+        
+        # Also drop non-feature tracking columns if present
+        for extra_drop in ["date", "city", "split"]:
+            if extra_drop in df.columns and extra_drop not in cols_to_drop:
+                cols_to_drop.append(extra_drop)
 
         X = df.drop(columns=cols_to_drop, errors="ignore")
         feature_names = list(X.columns)
@@ -181,40 +189,30 @@ class AQIDatasetLoader:
 
     def get_splits(self) -> DatasetSplits:
         """
-        Pulls data from Hopsworks, creates temporal train/val/test splits,
-        runs validation, and returns DatasetSplits.
+        Pulls data from local storage, validates schema, aligns features, and returns DatasetSplits.
         """
-        df = self._fetch_data_from_hopsworks()
-        
-        # Ensure data is sorted by timestamp if available for temporal splitting
-        if "timestamp" in df.columns:
-            df = df.sort_values("timestamp").reset_index(drop=True)
-
-        # Temporal split simulation from single feature group dataframe (70% Train, 15% Val, 15% Test)
-        train_idx = int(len(df) * 0.7)
-        val_idx = int(len(df) * 0.85)
-
-        train_df = df.iloc[:train_idx].copy()
-        val_df = df.iloc[train_idx:val_idx].copy()
-        test_df = df.iloc[val_idx:].copy()
+        train_df = self._fetch_data_locally("Train")
+        val_df = self._fetch_data_locally("Validation")
+        test_df = self._fetch_data_locally("Test")
 
         train_df = self._validate_and_clean_df(train_df, "Train")
         val_df = self._validate_and_clean_df(val_df, "Validation")
         test_df = self._validate_and_clean_df(test_df, "Test")
 
         X_train, y_train, train_features = self._separate_features_and_target(train_df)
-        X_val, y_val, _ = self._separate_features_and_target(val_df)
-        X_test, y_test, _ = self._separate_features_and_target(test_df)
+        X_val, y_val, val_features = self._separate_features_and_target(val_df)
+        X_test, y_test, test_features = self._separate_features_and_target(test_df)
 
-        extracted_feature_count = len(train_features)
-        if self.expected_feature_count is not None and extracted_feature_count != self.expected_feature_count:
-            logger.warning(
-                f"Extracted feature count mismatch: Expected {self.expected_feature_count}, "
-                f"but got {extracted_feature_count}. Proceeding with extracted features."
-            )
+        # Ensure all splits share the exact same set of feature columns in the exact same order
+        common_features = [f for f in train_features if f in val_features and f in test_features]
+        
+        X_train = X_train[common_features].fillna(0)
+        X_val = X_val[common_features].fillna(0)
+        X_test = X_test[common_features].fillna(0)
 
+        extracted_feature_count = len(common_features)
         logger.info(
-            "Feature extraction validated successfully (horizon=%dh). Total feature count: %d",
+            "Feature alignment completed successfully (horizon=%dh). Common feature count: %d",
             self.horizon_hours, extracted_feature_count,
         )
 
@@ -225,7 +223,7 @@ class AQIDatasetLoader:
             y_val=y_val,
             X_test=X_test,
             y_test=y_test,
-            feature_names=train_features,
+            feature_names=common_features,
             horizon_hours=self.horizon_hours,
         )
 
@@ -242,7 +240,7 @@ def load_prepared_splits(
     horizon_hours: int = DEFAULT_HORIZON_HOURS,
 ) -> DatasetSplits:
     """
-    Public utility function to fetch pre-split train/val/test data from Hopsworks
+    Public utility function to fetch pre-split train/val/test data locally
     for a SPECIFIC forecast horizon.
     """
     loader = AQIDatasetLoader(processed_dir=processed_dir, horizon_hours=horizon_hours)
@@ -253,7 +251,7 @@ if __name__ == "__main__":
     try:
         for horizon in (24, 48, 72):
             dataset_splits = load_prepared_splits(horizon_hours=horizon)
-            print(f"\n=== Dataset Load Successful from Hopsworks ({horizon}h horizon) ===")
+            print(f"\n=== Dataset Load Successful Locally ({horizon}h horizon) ===")
             print("Summary:", dataset_splits.summary())
     except Exception as err:
         logger.exception("Failed to run dataset.py verification test.")

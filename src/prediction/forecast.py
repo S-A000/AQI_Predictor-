@@ -1,12 +1,6 @@
-"""
-Suggested path: src/prediction/forecast.py
-
-SINGLE RESPONSIBILITY: Orchestrate multi-step forward horizon time-series forecasts 
-using prediction payloads, feature pipeline, and direct multi-horizon predictor engine.
-"""
-
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -36,14 +30,6 @@ class AQIForecaster:
         self.feature_loader = feature_loader or FeatureLoader()
 
     def _resolve_model_horizon(self, horizon_hours: int) -> int:
-        """
-        Intelligently maps the requested forecast horizon to the correct direct model target.
-        
-        Rules:
-            1 - 24 hours  -> 24h Model
-            25 - 48 hours -> 48h Model
-            49 - 72 hours -> 72h Model
-        """
         if not isinstance(horizon_hours, int) or horizon_hours < 1 or horizon_hours > 72:
             error_msg = (
                 f"Invalid forecast horizon '{horizon_hours}'. "
@@ -63,22 +49,13 @@ class AQIForecaster:
         self,
         horizon_hours: int = 24,
         payloads: Optional[List[Dict[str, Any] | PredictionPayload]] = None,
+        save_predictions: bool = True,  # 👈 Auto Save Flag Added
     ) -> List[Dict[str, Any]]:
         """
         Generates forward horizon predictions using the appropriate direct multi-horizon model.
-
-        Args:
-            horizon_hours: Number of forward forecast horizon steps (1 to 72).
-            payloads: Optional list of raw observation payloads. If omitted,
-                      fetches latest context window to construct prediction inputs.
-
-        Returns:
-            List of forecast dictionaries containing horizon step, timestamp, predicted AQI,
-            and model version details.
         """
         logger.info("Starting AQI forecast generation for %d-hour horizon...", horizon_hours)
 
-        # Step 1: Select direct model horizon (24h, 48h, or 72h model)
         model_horizon = self._resolve_model_horizon(horizon_hours)
         logger.info(
             "Mapped requested horizon of %d hours to direct model target: %dH",
@@ -86,11 +63,9 @@ class AQIForecaster:
             model_horizon,
         )
 
-        # Step 2: Fetch recent historical context for lag and rolling feature engineering
         context_df = self.feature_loader.load_latest_features(num_rows=72)
 
         if payloads is None:
-            # Step 3: Construct observation payloads based on latest observation context
             base_time = datetime.now(timezone.utc)
             payloads = []
 
@@ -119,12 +94,10 @@ class AQIForecaster:
                 }
                 payloads.append(payload_item)
 
-        # Step 4: Run batch inference via predictor using the selected direct model horizon
         try:
             predictions_df = self.predictor.predict_batch(
                 payloads, context_df=context_df, horizon_hours=model_horizon
             )
-            # Retrieve model version from loaded horizon resources
             horizon_resources = self.predictor._get_horizon_resources(model_horizon)
             model_version = horizon_resources["artifact"].model_version
         except FileNotFoundError as err:
@@ -134,7 +107,6 @@ class AQIForecaster:
             logger.exception("Failed executing prediction inference for horizon %dH: %s", model_horizon, err)
             raise
 
-        # Step 5: Format timestamped forecast horizon output
         forecast_payload = []
         for idx, row in enumerate(predictions_df.itertuples()):
             pred_aqi = getattr(row, "predicted_aqi")
@@ -150,6 +122,22 @@ class AQIForecaster:
             })
 
         logger.info("Successfully generated %d forecast data points using %dH model.", len(forecast_payload), model_horizon)
+
+        # ------------------------------------------------------------------
+        # 📂 Exporting Forecast Output to Disk
+        # ------------------------------------------------------------------
+        if save_predictions and forecast_payload:
+            output_dir = os.path.join("data", "predictions")
+            os.makedirs(output_dir, exist_ok=True)
+
+            export_df = pd.DataFrame(forecast_payload)
+            csv_path = os.path.join(output_dir, f"forecast_{horizon_hours}h.csv")
+            parquet_path = os.path.join(output_dir, f"forecast_{horizon_hours}h.parquet")
+
+            export_df.to_csv(csv_path, index=False)
+            export_df.to_parquet(parquet_path, index=False)
+            logger.info("Saved forecast output to %s and %s", csv_path, parquet_path)
+
         return forecast_payload
 
 
@@ -157,7 +145,7 @@ if __name__ == "__main__":
     try:
         forecaster = AQIForecaster()
         for h in [12, 24, 48, 72]:
-            forecasts = forecaster.generate_forecast(horizon_hours=h)
+            forecasts = forecaster.generate_forecast(horizon_hours=h, save_predictions=True)
             print(f"\n=== Forecast Horizon Output Sample ({h} Hours) ===")
             for f in forecasts[:3]:
                 print(f)

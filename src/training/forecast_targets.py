@@ -76,7 +76,7 @@ class ForecastTargetBuilder:
         self.horizons_hours = horizons_hours
 
     def target_column_name(self, horizon_hours: int) -> str:
-        return f"target_aqi_t+{horizon_hours}"
+        return f"target_aqi_t_{horizon_hours}"
 
     def _ensure_sorted(self, df: pd.DataFrame) -> pd.DataFrame:
         return df.sort_values([self.city_col, self.timestamp_col]).reset_index(drop=True)
@@ -117,7 +117,7 @@ class ForecastTargetBuilder:
         necessary for the shorter horizons (e.g. the last 24h of
         data is still perfectly usable for training the 24h-horizon
         model, even though its 72h target is NaN).
-        """
+        """ 
         col_name = self.target_column_name(horizon_hours)
         if col_name not in df.columns:
             raise ValueError(f"Column '{col_name}' not found — call build() first.")

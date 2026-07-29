@@ -1,6 +1,4 @@
 """
-scaling_encoding.py
-===================
 Suggested path: src/feature_engineering/scaling_encoding.py
 
 Phase 3, Part 8 — Scaling & Encoding.
@@ -74,6 +72,12 @@ class ScalingEncodingEngineer:
         self.categorical_columns_: list[str] = []
         self.categories_map_: dict[str, list[str]] = {}
         self.vif_dropped_cols_: list[str] = []
+
+        # NEW: tracks which expected features were missing on the most
+        # recent transform() call (empty list = nothing was missing).
+        # Callers (e.g. PredictionFeaturePipeline / AQIPredictor) can
+        # inspect this instead of the gap being invisible.
+        self.last_transform_missing_features_: list[str] = []
 
         valid_strategies = {"standard", "minmax", "robust"}
         if self.scaling_strategy not in valid_strategies:
@@ -160,8 +164,11 @@ class ScalingEncodingEngineer:
         if "aqi_category" in df.columns:
             to_drop.append("aqi_category")
 
-        if self.city_col in df.columns and any(c.startswith("city_") for c in df.columns):
-            to_drop.append(self.city_col)
+        # ❌ Puraana code:
+        # if self.city_col in df.columns and any(c.startswith("city_") for c in df.columns):
+        #     to_drop.append(self.city_col)
+
+        # ✅ REMOVE 'city' from to_drop list! City column Hopsworks Primary Key ke liye zaroori hai.
 
         to_drop = list(set(to_drop))
         for col in to_drop:
@@ -242,7 +249,7 @@ class ScalingEncodingEngineer:
 
     def encode_categoricals(self, df: pd.DataFrame, fit: bool = True) -> pd.DataFrame:
         """
-        One-hot encode remaining categorical columns using fixed categories 
+        One-hot encode remaining categorical columns using fixed categories
         from the training set.
         """
         df = df.copy()
@@ -295,14 +302,42 @@ class ScalingEncodingEngineer:
 
             df[self.feature_columns_] = self.scaler.fit_transform(df[self.feature_columns_])
             logger.info("Fitted %s scaler on %d features", self.scaling_strategy, len(self.feature_columns_))
+            self.last_transform_missing_features_ = []
         else:
             if self.scaler is None or self.feature_columns_ is None:
                 raise RuntimeError("Scaler has not been fitted yet! Call with fit=True first.")
 
-            # Ensure all expected numeric columns exist in validation/test set
-            for col in self.feature_columns_:
-                if col not in df.columns:
-                    df[col] = 0.0
+            # --------------------------------------------------------
+            # CHANGED (Silent Zeros fix): previously this block did
+            #   for col in self.feature_columns_:
+            #       if col not in df.columns:
+            #           df[col] = 0.0
+            # which silently invented a "0.0" reading for any missing
+            # expected feature — 0.0 is a plausible real value for many
+            # AQI-scale features, so a genuine upstream bug (a dropped
+            # pollutant column, a broken join) would look like clean,
+            # valid data instead of an error.
+            #
+            # Now: every missing column is (a) logged BY NAME so the
+            # gap is visible in monitoring/logs, (b) recorded on
+            # `last_transform_missing_features_` so a calling predictor
+            # can inspect or reject it, and (c) back-filled with this
+            # column's TRAINING-TIME fallback value (median/mean/zero,
+            # per fill_na_strategy — already computed during fit and
+            # stored in fill_values_) instead of a bare 0.0, so the
+            # fallback at least represents "typical", not "suspiciously
+            # clean air".
+            # --------------------------------------------------------
+            missing_cols = [c for c in self.feature_columns_ if c not in df.columns]
+            if missing_cols:
+                for col in missing_cols:
+                    df[col] = self.fill_values_.get(col, 0.0)
+                logger.warning(
+                    "Transform-time schema mismatch: %d expected feature(s) missing "
+                    "from input, back-filled with training fallback values: %s",
+                    len(missing_cols), missing_cols,
+                )
+            self.last_transform_missing_features_ = missing_cols
 
             df[self.feature_columns_] = self.scaler.transform(df[self.feature_columns_])
             logger.info("Transformed %d features using fitted %s scaler", len(self.feature_columns_), self.scaling_strategy)

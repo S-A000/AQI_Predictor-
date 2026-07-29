@@ -15,7 +15,7 @@ Four feature types, each answering a different question:
     - pct_change:         "how much did it change, relatively?" (%)
     - rate_of_change:      "how fast is it changing per hour?" (slope)
     - momentum:            "is the trend itself accelerating?"
-                            (change-of-change — second derivative)
+                           (change-of-change — second derivative)
 
 CRITICAL — same rules as lag_features.py / rolling_features.py:
     Computed PER CITY (groupby), sorted by timestamp. All of these
@@ -68,7 +68,11 @@ class TrendFeatureEngineer:
     # --------------------------------------------------
 
     def _ensure_sorted(self, df: pd.DataFrame) -> pd.DataFrame:
-        return df.sort_values([self.city_col, self.timestamp_col]).reset_index(drop=True)
+        if self.city_col in df.columns and self.timestamp_col in df.columns:
+            return df.sort_values([self.city_col, self.timestamp_col]).reset_index(drop=True)
+        elif self.timestamp_col in df.columns:
+            return df.sort_values([self.timestamp_col]).reset_index(drop=True)
+        return df
 
     def _columns_to_process(self, df: pd.DataFrame) -> list[str]:
         columns = [self.aqi_col, *self.pollutant_cols]
@@ -78,6 +82,10 @@ class TrendFeatureEngineer:
             logger.warning("Column(s) not found, skipping trend features for them: %s", sorted(missing))
         return available
 
+    def _prep_numeric_series(self, df: pd.DataFrame, column: str) -> pd.Series:
+        """Coerces column to numeric float series to avoid NoneType calculation crashes."""
+        return pd.to_numeric(df[column], errors="coerce").astype(float)
+
     # --------------------------------------------------
     # Difference (absolute change over N hours)
     # --------------------------------------------------
@@ -85,9 +93,14 @@ class TrendFeatureEngineer:
     def add_difference(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         for column in self._columns_to_process(df):
-            grouped = df.groupby(self.city_col)[column]
-            for period in self.periods:
-                df[f"{column}_diff_{period}"] = grouped.transform(lambda s, p=period: s.diff(p))
+            series = self._prep_numeric_series(df, column)
+            if self.city_col in df.columns:
+                grouped = series.groupby(df[self.city_col])
+                for period in self.periods:
+                    df[f"{column}_diff_{period}"] = grouped.transform(lambda s, p=period: s.diff(p))
+            else:
+                for period in self.periods:
+                    df[f"{column}_diff_{period}"] = series.diff(period)
         return df
 
     # --------------------------------------------------
@@ -97,14 +110,16 @@ class TrendFeatureEngineer:
     def add_pct_change(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         for column in self._columns_to_process(df):
-            grouped = df.groupby(self.city_col)[column]
-            for period in self.periods:
-                # pct_change is undefined (inf) when the base value is 0
-                # (e.g. so2 occasionally reads 0) — replace with NaN
-                # rather than leave +/-inf, which would break scaling
-                # and most sklearn models downstream.
-                pct = grouped.transform(lambda s, p=period: s.pct_change(p))
-                df[f"{column}_pctchange_{period}"] = pct.replace([float("inf"), float("-inf")], pd.NA)
+            series = self._prep_numeric_series(df, column)
+            if self.city_col in df.columns:
+                grouped = series.groupby(df[self.city_col])
+                for period in self.periods:
+                    pct = grouped.transform(lambda s, p=period: s.pct_change(p, fill_method=None))
+                    df[f"{column}_pctchange_{period}"] = pct.replace([float("inf"), float("-inf")], pd.NA)
+            else:
+                for period in self.periods:
+                    pct = series.pct_change(period)
+                    df[f"{column}_pctchange_{period}"] = pct.replace([float("inf"), float("-inf")], pd.NA)
         return df
 
     # --------------------------------------------------
@@ -112,19 +127,18 @@ class TrendFeatureEngineer:
     # --------------------------------------------------
 
     def add_rate_of_change(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Rate of change = difference over the period, normalized to a
-        PER-HOUR slope, so a 24h period and a 3h period are on a
-        comparable scale (units/hour) rather than raw cumulative
-        difference. This is deliberately distinct from
-        add_difference() (raw cumulative change).
-        """
         df = df.copy()
         for column in self._columns_to_process(df):
-            grouped = df.groupby(self.city_col)[column]
-            for period in self.periods:
-                diff = grouped.transform(lambda s, p=period: s.diff(p))
-                df[f"{column}_roc_{period}"] = diff / period
+            series = self._prep_numeric_series(df, column)
+            if self.city_col in df.columns:
+                grouped = series.groupby(df[self.city_col])
+                for period in self.periods:
+                    diff = grouped.transform(lambda s, p=period: s.diff(p))
+                    df[f"{column}_roc_{period}"] = diff / period
+            else:
+                for period in self.periods:
+                    diff = series.diff(period)
+                    df[f"{column}_roc_{period}"] = diff / period
         return df
 
     # --------------------------------------------------
@@ -132,22 +146,19 @@ class TrendFeatureEngineer:
     # --------------------------------------------------
 
     def add_momentum(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Momentum = difference of the difference: how much the
-        `{momentum_period}`-hour change itself changed versus
-        `{momentum_period}` hours ago. Positive momentum on AQI
-        means pollution isn't just rising, it's rising FASTER than
-        before — a sharper early-warning signal than the raw
-        difference alone.
-        """
         df = df.copy()
         period = self.momentum_period
         for column in self._columns_to_process(df):
-            grouped = df.groupby(self.city_col)[column]
-            first_diff = grouped.transform(lambda s, p=period: s.diff(p))
-            df[f"{column}_momentum_{period}"] = first_diff.groupby(df[self.city_col]).transform(
-                lambda s, p=period: s.diff(p)
-            )
+            series = self._prep_numeric_series(df, column)
+            if self.city_col in df.columns:
+                grouped = series.groupby(df[self.city_col])
+                first_diff = grouped.transform(lambda s, p=period: s.diff(p))
+                df[f"{column}_momentum_{period}"] = first_diff.groupby(df[self.city_col]).transform(
+                    lambda s, p=period: s.diff(p)
+                )
+            else:
+                first_diff = series.diff(period)
+                df[f"{column}_momentum_{period}"] = first_diff.diff(period)
         return df
 
     # --------------------------------------------------

@@ -1,20 +1,32 @@
-from fastapi import FastAPI
-from contextlib import asynccontextmanager
-from src.api.routes import router, load_models
+from __future__ import annotations
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # App start hotay hi models RAM mein load honge
-    load_models()
-    yield
-    # Cleanup logic (if needed on shutdown)
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from src.api.routes import router
 
 app = FastAPI(
-    title="Enterprise AQI Forecasting Platform API",
-    description="Multi-Horizon (24h, 48h, 72h) AQI Forecasting Service powered by MLOps Pipeline.",
+    title="AQI Forecasting API",
     version="1.0.0",
-    lifespan=lifespan
+    description="FastAPI backend for AQI forecasting dashboard.",
 )
 
-# Attach routes
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(router, prefix="/api/v1")
+
+
+@app.get("/")
+def root() -> dict:
+    return {
+        "message": "AQI Forecasting API is running.",
+        "docs": "/docs",
+        "health": "/api/v1/health",
+        "dashboard": "/api/v1/dashboard",
+    }

@@ -124,7 +124,7 @@ class TemporalFeatureEngineer:
         df["hour"] = dt.hour
         df["minute"] = dt.minute
         df["day_of_year"] = dt.dayofyear
-        df["week_of_year"] = dt.isocalendar().week.astype(int)
+        df["week_of_year"] = dt.isocalendar().week.fillna(0).astype(int)
 
         logger.info("Time components added: year, month, day, hour, minute, day_of_year, week_of_year")
         return df

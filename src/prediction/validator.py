@@ -49,7 +49,7 @@ class PredictionPayload(BaseModel):
     wind_speed: float = Field(ge=0.0, le=120.0, description="Wind speed in m/s")
     wind_direction: float = Field(ge=0.0, le=360.0, alias="wind_deg", description="Wind direction")
     cloudiness: float = Field(ge=0.0, le=100.0, description="Cloudiness percentage")
-    visibility: float = Field(ge=0.0, description="Visibility in meters")
+    visibility: float = Field(ge=-1.0, description="Visibility in meters (-1.0 allowed for missing values)")
     
     pm25: Optional[float] = Field(default=None, ge=0.0)
     pm10: Optional[float] = Field(default=None, ge=0.0)

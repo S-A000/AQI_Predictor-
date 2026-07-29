@@ -38,11 +38,49 @@ on the CLI) to run an AQI-only pipeline:
 When `enable_weather` is left at its default (True), behaviour is
 100% identical to before this change (backward compatible).
 
+Note on Telemetry / Degraded-Mode Tracking (NEW)
+--------------------------------------------------
+Previously, a Weather or AQI fetch failure was only visible as a
+plain log line inside `_fetch_with_retry` — there was no counter
+for how often each provider was failing, and no tracking of how
+many city-results ended up without weather data. If the Weather
+API went down for weeks, the only symptom would be scattered log
+lines nobody was watching.
+
+`PipelineMetrics` now tracks, in addition to run-level success/
+failure:
+    - `_weather_failures` / `_aqi_failures`: provider-specific
+      failure counters, incremented by `_fetch_with_retry` itself
+      (via `record_api_failure`) the moment retries are exhausted.
+    - `_full_mode_results` / `_degraded_mode_results`: how many
+      city-results had weather data vs. didn't (AQI-only), whether
+      that was because of the static `enable_weather=False` toggle
+      or a runtime auto-degrade (see below).
+    - A rolling window (`_degradation_window`) used by
+      `check_degradation_alert()` to log a loud, actionable alert
+      once the degraded-mode ratio crosses a threshold over the
+      last N city-results — instead of this staying invisible
+      until someone notices the training data looks "off".
+
+Note on Auto-Degrade (NEW, opt-in, default OFF)
+--------------------------------------------------
+Before this change, if `enable_weather=True` but the Weather API
+specifically failed for a city (AQI still succeeded), the WHOLE
+city-result failed — there was no dynamic fallback to AQI-only.
+`Pipeline(auto_degrade_on_weather_failure=True)` opts into that
+fallback: if weather fails after retries but AQI succeeds, the
+city still produces an `AQIOnlyFeature` (with a telemetry event)
+instead of failing outright. This is entirely opt-in — the
+default (`False`) preserves the exact prior behaviour, so nothing
+that depends on today's failure semantics breaks.
+
 Capabilities
 ------------
 - Multiple cities support (asyncio.gather)
 - Parallel weather + AQI fetch per city
 - Optional Weather API (AQI-only mode supported)
+- Structured API-failure & degraded-mode telemetry with alerting
+- Opt-in dynamic weather-fallback (auto-degrade)
 - Pipeline hooks (before_run, after_run)
 - Metrics collection
 - Prometheus / OpenTelemetry integration (optional, auto-detected)
@@ -96,10 +134,22 @@ try:
     CITY_PROCESSING_SECONDS = Histogram(
         "pipeline_city_processing_seconds", "Per-city fetch+merge duration"
     )
+    # NEW: provider-specific failure counter + degraded-mode gauge-like
+    # counter, mirrored alongside the existing metrics when prometheus
+    # is installed. Purely additive — no existing metric is touched.
+    API_FAILURES_TOTAL = Counter(
+        "pipeline_api_failures_total", "Total provider fetch failures", ["provider"]
+    )
+    DEGRADED_CITY_RESULTS_TOTAL = Counter(
+        "pipeline_degraded_city_results_total",
+        "City results produced without weather data", ["reason"],
+    )
     _PROMETHEUS_AVAILABLE = True
 except ImportError:
     PIPELINE_RUNS_TOTAL = None
     CITY_PROCESSING_SECONDS = None
+    API_FAILURES_TOTAL = None
+    DEGRADED_CITY_RESULTS_TOTAL = None
     _PROMETHEUS_AVAILABLE = False
 
 try:
@@ -240,8 +290,10 @@ class AQICNClient:
 
 class AQIOnlyFeature(BaseModel):
     """
-    Lightweight feature record used ONLY when the Weather API is
-    disabled (`enable_weather=False`).
+    Lightweight feature record used when weather data is unavailable —
+    either because the pipeline is statically configured with
+    `enable_weather=False`, or (NEW) because of an opt-in runtime
+    auto-degrade after a weather fetch failure. See module docstring.
 
     This intentionally lives outside `merger.py` so the existing
     `FeatureMerger` / `MergedFeature` weather+AQI fusion logic
@@ -304,6 +356,19 @@ class PipelineMetrics:
     _failures: ClassVar[int] = 0
     _durations_s: ClassVar[list[float]] = []
 
+    # ------------------------------------------------------------
+    # NEW — API-health / degraded-mode telemetry (Missing Telemetry fix).
+    # See module docstring "Note on Telemetry / Degraded-Mode Tracking".
+    # ------------------------------------------------------------
+    _weather_failures: ClassVar[int] = 0
+    _aqi_failures: ClassVar[int] = 0
+    _full_mode_results: ClassVar[int] = 0       # weather+AQI succeeded
+    _degraded_mode_results: ClassVar[int] = 0   # AQI-only (any reason)
+    # Rolling window of (timestamp, was_degraded), used to compute a
+    # live "% degraded" ratio for alerting without keeping unbounded history.
+    _degradation_window: ClassVar[list[tuple[datetime, bool]]] = []
+    _DEGRADATION_WINDOW_MAXLEN: ClassVar[int] = 500
+
     @classmethod
     def record_run(cls, success: bool, duration_s: float) -> None:
         cls._runs += 1
@@ -320,6 +385,93 @@ class PipelineMetrics:
             CITY_PROCESSING_SECONDS.observe(duration_s)
 
     @classmethod
+    def record_api_failure(cls, *, provider: str, city: str, error: str) -> None:
+        """
+        NEW: structured record of a provider-specific fetch failure,
+        called by `_fetch_with_retry` the moment it exhausts all
+        retry attempts. This is the piece that was previously
+        invisible: before, the exception was logged once and then
+        only surfaced as a generic city-level failure — there was no
+        running count of "how many times has the Weather API failed
+        this week" to look at.
+        """
+        if provider == "weather":
+            cls._weather_failures += 1
+        elif provider == "aqi":
+            cls._aqi_failures += 1
+
+        if _PROMETHEUS_AVAILABLE:
+            API_FAILURES_TOTAL.labels(provider=provider).inc()
+
+        logger.error(
+            "api_failure_event provider=%s city=%s error=%s "
+            "weather_failures_total=%d aqi_failures_total=%d",
+            provider, city, error, cls._weather_failures, cls._aqi_failures,
+        )
+
+    @classmethod
+    def record_degraded_mode(cls, *, city: str, reason: str) -> None:
+        """
+        NEW: structured record every time a city-result ends up WITHOUT
+        weather data — whether because the pipeline was statically
+        configured with `enable_weather=False`, or because of the
+        opt-in auto-degrade fallback after a weather fetch failure.
+        Feeds the rolling window used by `check_degradation_alert()`.
+        """
+        cls._degraded_mode_results += 1
+        cls._degradation_window.append((datetime.now(timezone.utc), True))
+        cls._trim_window()
+
+        if _PROMETHEUS_AVAILABLE:
+            DEGRADED_CITY_RESULTS_TOTAL.labels(reason=reason).inc()
+
+        logger.warning(
+            "degraded_mode_event city=%s reason=%s degraded_total=%d full_total=%d",
+            city, reason, cls._degraded_mode_results, cls._full_mode_results,
+        )
+
+    @classmethod
+    def record_full_mode(cls, *, city: str) -> None:
+        """NEW: structured record every time a city-result HAS weather data."""
+        cls._full_mode_results += 1
+        cls._degradation_window.append((datetime.now(timezone.utc), False))
+        cls._trim_window()
+
+    @classmethod
+    def _trim_window(cls) -> None:
+        if len(cls._degradation_window) > cls._DEGRADATION_WINDOW_MAXLEN:
+            cls._degradation_window = cls._degradation_window[-cls._DEGRADATION_WINDOW_MAXLEN:]
+
+    @classmethod
+    def get_degradation_ratio(cls, *, last_n: int = 100) -> float:
+        """NEW: fraction of the last `last_n` city-results that were degraded (AQI-only)."""
+        window = cls._degradation_window[-last_n:]
+        if not window:
+            return 0.0
+        return sum(1 for _, degraded in window if degraded) / len(window)
+
+    @classmethod
+    def check_degradation_alert(cls, *, threshold: float = 0.20, last_n: int = 100) -> bool:
+        """
+        NEW: returns True (and logs a loud, actionable error) if the
+        degraded-mode ratio over the last `last_n` city-results exceeds
+        `threshold` (default 20%). Called automatically at the end of
+        `Pipeline.run()` — this is the piece that turns "weeks of
+        silently degraded training data" into something that shows up
+        in logs/alerting immediately instead of at model-evaluation time.
+        """
+        ratio = cls.get_degradation_ratio(last_n=last_n)
+        if ratio > threshold:
+            logger.error(
+                "DEGRADATION_ALERT: %.1f%% of the last %d city-result(s) were "
+                "AQI-only (no weather data) — threshold is %.0f%%. The Weather "
+                "API may be down, rate-limited, or misconfigured.",
+                ratio * 100, min(last_n, len(cls._degradation_window)), threshold * 100,
+            )
+            return True
+        return False
+
+    @classmethod
     def get_metrics(cls) -> dict[str, Any]:
         return {
             "runs": cls._runs,
@@ -330,6 +482,12 @@ class PipelineMetrics:
                 if cls._durations_s
                 else 0.0
             ),
+            # NEW
+            "weather_failures": cls._weather_failures,
+            "aqi_failures": cls._aqi_failures,
+            "full_mode_results": cls._full_mode_results,
+            "degraded_mode_results": cls._degraded_mode_results,
+            "degradation_ratio_last_100": round(cls.get_degradation_ratio(last_n=100), 4),
         }
 
     @classmethod
@@ -338,6 +496,11 @@ class PipelineMetrics:
         cls._successes = 0
         cls._failures = 0
         cls._durations_s = []
+        cls._weather_failures = 0
+        cls._aqi_failures = 0
+        cls._full_mode_results = 0
+        cls._degraded_mode_results = 0
+        cls._degradation_window = []
 
 
 # ============================================================
@@ -351,8 +514,17 @@ async def _fetch_with_retry(
     max_attempts: int = 3,
     delay: float = 1.0,
     backoff: float = 2.0,
+    provider: str | None = None,
 ) -> dict:
-    """Retry an async fetch call with exponential backoff."""
+    """
+    Retry an async fetch call with exponential backoff.
+
+    CHANGED: new optional `provider` kwarg ("weather" / "aqi"). When
+    given, a final failure (after all retries are exhausted) is
+    reported to `PipelineMetrics.record_api_failure` before the
+    exception is re-raised — see that method's docstring. Passing no
+    `provider` preserves the exact prior behavior (log-only, no counter).
+    """
 
     current_delay = delay
     last_exc: Exception | None = None
@@ -371,6 +543,8 @@ async def _fetch_with_retry(
                 current_delay *= backoff
 
     assert last_exc is not None
+    if provider:
+        PipelineMetrics.record_api_failure(provider=provider, city=city, error=str(last_exc))
     raise last_exc
 
 
@@ -412,6 +586,9 @@ class CityResult:
     error: str | None = None
     warnings: list[str] = field(default_factory=list)
     duration_s: float = 0.0
+    # NEW: visibility into whether this result came back without
+    # weather data, and why — None means "full weather+AQI result".
+    degraded_reason: str | None = None
 
 
 @dataclass
@@ -427,6 +604,10 @@ class PipelineRunSummary:
     # NEW: report which APIs were enabled for this run.
     weather_enabled: bool = True
     aqi_enabled: bool = True
+    # NEW: telemetry snapshot — degraded-mode ratio over the trailing
+    # window at the time this run finished (see PipelineMetrics).
+    degradation_ratio_last_100: float = 0.0
+    degradation_alert_triggered: bool = False
 
     @property
     def duration_s(self) -> float:
@@ -442,6 +623,11 @@ class PipelineRunSummary:
     def cities_failed(self) -> int:
         return sum(1 for r in self.city_results if not r.success)
 
+    @property
+    def cities_degraded(self) -> int:
+        """NEW: how many successful city-results were AQI-only (no weather)."""
+        return sum(1 for r in self.city_results if r.success and r.degraded_reason)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "run_id": self.run_id,
@@ -451,11 +637,14 @@ class PipelineRunSummary:
             "cities_requested": self.cities_requested,
             "cities_succeeded": self.cities_succeeded,
             "cities_failed": self.cities_failed,
+            "cities_degraded": self.cities_degraded,
             "version": self.version,
             "feature_store_uploaded": self.feature_store_uploaded,
             "aborted_reason": self.aborted_reason,
             "weather_enabled": self.weather_enabled,
             "aqi_enabled": self.aqi_enabled,
+            "degradation_ratio_last_100": round(self.degradation_ratio_last_100, 4),
+            "degradation_alert_triggered": self.degradation_alert_triggered,
             "results": [
                 {
                     "city": r.city,
@@ -463,6 +652,7 @@ class PipelineRunSummary:
                     "error": r.error,
                     "warnings": r.warnings,
                     "duration_s": round(r.duration_s, 3),
+                    "degraded_reason": r.degraded_reason,
                 }
                 for r in self.city_results
             ],
@@ -477,11 +667,14 @@ class PipelineRunSummary:
             f"Started:   {self.started_at.isoformat()}",
             f"Finished:  {self.finished_at.isoformat() if self.finished_at else '-'}",
             f"Duration:  {self.duration_s:.2f}s",
-            f"Cities:    {self.cities_succeeded}/{len(self.cities_requested)} succeeded",
+            f"Cities:    {self.cities_succeeded}/{len(self.cities_requested)} succeeded"
+            f" ({self.cities_degraded} degraded/AQI-only)",
             f"Version:   {self.version or '-'}",
             f"Weather Enabled: {self.weather_enabled}",
             f"AQI Enabled:     {self.aqi_enabled}",
             f"Feature Store Upload: {'yes' if self.feature_store_uploaded else 'no'}",
+            f"Degradation Ratio (last 100): {self.degradation_ratio_last_100:.1%}"
+            + (" ⚠ ALERT" if self.degradation_alert_triggered else ""),
         ]
 
         if self.aborted_reason:
@@ -491,7 +684,8 @@ class PipelineRunSummary:
 
         for result in self.city_results:
             status = "OK" if result.success else "FAIL"
-            lines.append(f"[{status}] {result.city:<20} {result.duration_s:.2f}s")
+            degraded_tag = f" [DEGRADED: {result.degraded_reason}]" if result.degraded_reason else ""
+            lines.append(f"[{status}] {result.city:<20} {result.duration_s:.2f}s{degraded_tag}")
 
             if result.error:
                 lines.append(f"        error: {result.error}")
@@ -532,6 +726,8 @@ class Pipeline:
         max_concurrent_cities: int = 10,
         fetch_retries: int = 3,
         enable_weather: bool = True,
+        auto_degrade_on_weather_failure: bool = False,
+        degradation_alert_threshold: float = 0.20,
     ):
         # Weather client is still constructed even when disabled
         # (keeps OpenWeatherClient fully intact for future use /
@@ -552,8 +748,19 @@ class Pipeline:
         # callers observe identical behaviour (backward compatible).
         self.enable_weather = enable_weather
 
+        # NEW — opt-in, default OFF. See module docstring "Note on
+        # Auto-Degrade". False = 100% identical behaviour to before:
+        # a weather-fetch failure still fails the whole city-result.
+        self.auto_degrade_on_weather_failure = auto_degrade_on_weather_failure
+        self.degradation_alert_threshold = degradation_alert_threshold
+
         if not self.enable_weather:
             logger.info("Weather API disabled. Running AQI-only pipeline.")
+        if self.auto_degrade_on_weather_failure:
+            logger.info(
+                "Auto-degrade enabled: cities will fall back to AQI-only "
+                "if the Weather API fails after retries (AQI still required)."
+            )
 
         self._semaphore = asyncio.Semaphore(max_concurrent_cities)
         self._shutdown_event = asyncio.Event()
@@ -599,23 +806,72 @@ class Pipeline:
             try:
                 # --------------------------------------------
                 # Fetch: only retry/fetch APIs that are enabled.
+                #
+                # CHANGED: when `auto_degrade_on_weather_failure` is
+                # True, weather and AQI are fetched with
+                # `return_exceptions=True` so a weather failure doesn't
+                # cancel/kill the AQI fetch — AQI is still required,
+                # weather becomes optional-at-runtime. Default
+                # behaviour (flag off) is byte-for-byte the same as
+                # before: a weather failure propagates and fails the
+                # whole city-result.
                 # --------------------------------------------
+                weather_degraded = False
+                weather_degraded_reason: str | None = None
+
                 with _span(f"fetch:{city}"):
-                    if self.enable_weather:
+                    if self.enable_weather and self.auto_degrade_on_weather_failure:
+                        weather_result, aqi_result = await asyncio.gather(
+                            _fetch_with_retry(
+                                self.weather_client, city,
+                                max_attempts=self.fetch_retries, provider="weather",
+                            ),
+                            _fetch_with_retry(
+                                self.aqi_client, city,
+                                max_attempts=self.fetch_retries, provider="aqi",
+                            ),
+                            return_exceptions=True,
+                        )
+                        if isinstance(aqi_result, Exception):
+                            # AQI is always required — no fallback for it.
+                            raise aqi_result
+                        aqi_raw = aqi_result
+
+                        if isinstance(weather_result, Exception):
+                            logger.warning(
+                                "Weather fetch failed for %s after retries (%s) — "
+                                "auto-degrading to AQI-only for this city.",
+                                city, weather_result,
+                            )
+                            weather_raw = None
+                            weather_degraded = True
+                            weather_degraded_reason = "weather_fetch_failed"
+                        else:
+                            weather_raw = weather_result
+
+                    elif self.enable_weather:
                         weather_raw, aqi_raw = await asyncio.gather(
-                            _fetch_with_retry(self.weather_client, city, max_attempts=self.fetch_retries),
-                            _fetch_with_retry(self.aqi_client, city, max_attempts=self.fetch_retries),
+                            _fetch_with_retry(
+                                self.weather_client, city,
+                                max_attempts=self.fetch_retries, provider="weather",
+                            ),
+                            _fetch_with_retry(
+                                self.aqi_client, city,
+                                max_attempts=self.fetch_retries, provider="aqi",
+                            ),
                         )
                     else:
                         logger.info("Running AQI-only pipeline for %s.", city)
                         weather_raw = None
                         aqi_raw = await _fetch_with_retry(
-                            self.aqi_client, city, max_attempts=self.fetch_retries
+                            self.aqi_client, city,
+                            max_attempts=self.fetch_retries, provider="aqi",
                         )
+                        weather_degraded_reason = "weather_disabled"
 
                 # --------------------------------------------
                 # Validate: AQI always validated; weather only
-                # validated when the Weather API is enabled.
+                # validated when it was actually fetched.
                 # --------------------------------------------
                 aqi_obj, aqi_report = ResponseValidator.validate_aqi_with_report(
                     aqi_raw, strict=self.strict
@@ -625,15 +881,24 @@ class Pipeline:
                 weather_obj = None
                 weather_report = None
 
-                if self.enable_weather:
+                if self.enable_weather and weather_raw is not None:
                     weather_obj, weather_report = ResponseValidator.validate_weather_with_report(
                         weather_raw, strict=self.strict
                     )
                     warnings = list(weather_report.warnings) + warnings
+                elif self.enable_weather and weather_degraded:
+                    logger.info(
+                        "Weather data unavailable for %s (auto-degraded); "
+                        "skipping weather validation.", city,
+                    )
                 else:
                     logger.info("Skipping weather validation (weather disabled) for %s.", city)
 
-                weather_missing = self.enable_weather and weather_obj is None
+                # A city only fails on missing weather if weather was
+                # REQUIRED (enabled) AND we're not in an auto-degrade
+                # fallback — auto-degrade intentionally tolerates
+                # missing weather without failing the city.
+                weather_missing = self.enable_weather and not weather_degraded and weather_obj is None
 
                 if aqi_obj is None or weather_missing:
                     errors = list(aqi_report.errors)
@@ -648,15 +913,21 @@ class Pipeline:
                     )
 
                 # --------------------------------------------
-                # Merge: full weather+AQI merge only when both
-                # are available; otherwise an AQI-only feature.
+                # Merge: full weather+AQI merge only when weather
+                # data actually made it through; otherwise an
+                # AQI-only feature. Every branch now records
+                # structured telemetry (Missing Telemetry fix).
                 # --------------------------------------------
                 with _span(f"merge:{city}"):
-                    if self.enable_weather:
+                    if self.enable_weather and not weather_degraded:
                         feature: Feature = FeatureMerger.merge(weather_obj, aqi_obj)
+                        PipelineMetrics.record_full_mode(city=city)
                     else:
                         logger.info("Skipping feature merge (weather unavailable) for %s.", city)
                         feature = AQIOnlyFeature.from_aqi(aqi_obj)
+                        reason = weather_degraded_reason or "weather_disabled"
+                        PipelineMetrics.record_degraded_mode(city=city, reason=reason)
+                        weather_degraded_reason = reason
 
                 duration_s = time.perf_counter() - start
                 PipelineMetrics.record_city_duration(duration_s)
@@ -664,6 +935,7 @@ class Pipeline:
                 return CityResult(
                     city=city, success=True, feature=feature,
                     warnings=warnings, duration_s=duration_s,
+                    degraded_reason=weather_degraded_reason if (not self.enable_weather or weather_degraded) else None,
                 )
 
             except Exception as exc:  # noqa: BLE001
@@ -780,11 +1052,21 @@ class Pipeline:
         summary.finished_at = datetime.now(timezone.utc)
         PipelineMetrics.record_run(summary.cities_failed == 0, summary.duration_s)
 
+        # NEW: snapshot the trailing degradation ratio onto the summary
+        # and run the threshold check — this is what turns "degraded
+        # data has been accumulating silently" into a logged alert on
+        # every single run, without requiring anyone to go dig through
+        # PipelineMetrics.get_metrics() manually.
+        summary.degradation_ratio_last_100 = PipelineMetrics.get_degradation_ratio(last_n=100)
+        summary.degradation_alert_triggered = PipelineMetrics.check_degradation_alert(
+            threshold=self.degradation_alert_threshold, last_n=100,
+        )
+
         await self._run_hooks(self._after_run_hooks, summary)
 
         logger.info(
-            "Pipeline run %s finished: %d/%d cities succeeded.",
-            run_id, summary.cities_succeeded, len(cities),
+            "Pipeline run %s finished: %d/%d cities succeeded (%d degraded).",
+            run_id, summary.cities_succeeded, len(cities), summary.cities_degraded,
         )
 
         return summary
@@ -878,6 +1160,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--disable-weather", dest="enable_weather", action="store_false", default=True,
         help="Disable the Weather (OpenWeather) API and run an AQI-only pipeline.",
     )
+    # NEW: opt-in dynamic auto-degrade + alert threshold.
+    parser.add_argument(
+        "--auto-degrade-weather", dest="auto_degrade_on_weather_failure",
+        action="store_true", default=False,
+        help="If the Weather API fails after retries, fall back to an "
+             "AQI-only result for that city instead of failing it outright.",
+    )
+    parser.add_argument(
+        "--degradation-alert-threshold", type=float, default=0.20,
+        help="Log a DEGRADATION_ALERT if more than this fraction of the "
+             "last 100 city-results were AQI-only (default: 0.20).",
+    )
 
     return parser
 
@@ -893,6 +1187,8 @@ async def _main(argv: list[str] | None = None) -> int:
         strict=args.strict,
         abort_on_unhealthy=not args.skip_health_check,
         enable_weather=args.enable_weather,
+        auto_degrade_on_weather_failure=args.auto_degrade_on_weather_failure,
+        degradation_alert_threshold=args.degradation_alert_threshold,
     )
 
     summary = await pipeline.run(args.cities, formats=tuple(args.formats))

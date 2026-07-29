@@ -17,14 +17,14 @@ class AQIShapAnalyzer:
         self.shap_values = None
 
     def load_assets(self, sample_size=300):
-        """Loads the champion model and test dataset, extracting the 626 features."""
+        """Loads the champion model and test dataset, extracting the features."""
         print(f"📦 Loading model from {self.model_path}...")
         self.model = joblib.load(self.model_path)
         
         print(f"📊 Loading dataset from {self.data_path}...")
         self.df = pd.read_parquet(self.data_path)
         
-        # Drop metadata and target columns to isolate the exact 626 features
+        # Drop metadata and target columns to isolate features
         drop_cols = [
             'timestamp', 'city', 'country', 'created_at', 'source', 
             'aqi_category', 'dominant_pollutant', 
@@ -39,9 +39,9 @@ class AQIShapAnalyzer:
     def compute_shap_values(self):
         """Computes SHAP values using TreeExplainer optimized for tree-based models."""
         print("⚙️ Initializing SHAP TreeExplainer & calculating values...")
-        # HistGradientBoosting / XGBoost / RandomForest ke liye TreeExplainer best hai
         self.explainer = shap.TreeExplainer(self.model)
         self.shap_values = self.explainer(self.X)
+        print("✅ SHAP values successfully calculated!")
         return self.shap_values
 
     def plot_summary(self, save_path="models/registry/registry/evaluation/shap_summary.png"):
@@ -67,7 +67,6 @@ class AQIShapAnalyzer:
         return feature_importance.head(top_n)
 
 if __name__ == "__main__":
-    # Run standalone test
     analyzer = AQIShapAnalyzer()
     analyzer.load_assets(sample_size=300)
     analyzer.compute_shap_values()

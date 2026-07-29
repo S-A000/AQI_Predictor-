@@ -1,71 +1,68 @@
-import os
-import joblib
-from pathlib import Path
-from fastapi import APIRouter, HTTPException, status
-from src.api.schemas import PredictRequest, PredictResponse, HorizonPrediction, HealthCheckResponse
+from __future__ import annotations
+
+from fastapi import APIRouter, HTTPException
+
+from src.api.schemas import CityDashboardResponse, DashboardResponse, HealthResponse
+from src.prediction.dashboard_service import DashboardForecastService
 
 router = APIRouter()
 
-# Global dictionary to hold loaded models in RAM
-MODELS = {}
+dashboard_service = DashboardForecastService()
 
-# Exact registry directory matching your folder tree
-MODEL_DIR = Path("models/registry/registry")
 
-def load_models():
-    """Helper function to load trained horizon models from registry."""
-    global MODELS
-    horizons = ["24h", "48h", "72h"]
-    
-    for h in horizons:
-        # Exact file name match: 24h_model.joblib, 48h_model.joblib, 72h_model.joblib
-        model_path = MODEL_DIR / f"{h}_model.joblib"
-        
-        if model_path.exists():
-            MODELS[h] = joblib.load(model_path)
-            print(f"✅ Loaded model for horizon: {h} from {model_path}")
-        else:
-            print(f"⚠️ Warning: Model for horizon '{h}' not found at {model_path}")
-
-@router.get("/health", response_model=HealthCheckResponse, status_code=status.HTTP_200_OK)
-def health_check():
-    """Health check endpoint to confirm API & models status."""
-    return HealthCheckResponse(
-        status="healthy",
-        loaded_models=list(MODELS.keys())
+@router.get("/health", response_model=HealthResponse)
+def health_check() -> HealthResponse:
+    return HealthResponse(
+        status="ok",
+        service="AQI Forecasting API",
     )
 
-@router.post("/predict", response_model=PredictResponse)
-def predict_aqi(payload: PredictRequest):
-    """Generate 24h, 48h, and 72h AQI predictions from the 626-feature vector."""
-    if not MODELS:
+
+@router.get("/dashboard", response_model=DashboardResponse)
+def get_dashboard_data() -> DashboardResponse:
+    try:
+        results = dashboard_service.get_all_cities_dashboard_data()
+        return DashboardResponse(cities=results)
+
+    except Exception as err:
+        raise HTTPException(status_code=500, detail=str(err)) from err
+
+
+@router.get("/dashboard/{city}", response_model=CityDashboardResponse)
+def get_city_dashboard_data(city: str) -> CityDashboardResponse:
+    allowed_cities = {"islamabad", "karachi", "lahore"}
+
+    if city.lower() not in allowed_cities:
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="No trained models are currently loaded on the server."
+            status_code=400,
+            detail="Unsupported city. Use Islamabad, Karachi, or Lahore.",
         )
 
-    # Validate feature vector length
-    if len(payload.features) != 626:
+    try:
+        result = dashboard_service.get_city_dashboard_data(city=city)
+        return CityDashboardResponse(**result)
+
+    except Exception as err:
+        raise HTTPException(status_code=500, detail=str(err)) from err
+
+
+@router.get("/dashboard/{city}/explain")
+def get_city_explainability(city: str) -> dict:
+    allowed_cities = {"islamabad", "karachi", "lahore"}
+
+    if city.lower() not in allowed_cities:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Expected feature vector length of 626, but got {len(payload.features)}."
+            status_code=400,
+            detail="Unsupported city. Use Islamabad, Karachi, or Lahore.",
         )
 
-    predictions = []
-    feature_vector = [payload.features]  # Reshape for single-sample inference
+    try:
+        result = dashboard_service.get_city_dashboard_data(city=city)
 
-    for horizon in ["24h", "48h", "72h"]:
-        if horizon in MODELS:
-            pred_value = MODELS[horizon].predict(feature_vector)[0]
-            predictions.append(
-                HorizonPrediction(
-                    horizon=horizon,
-                    predicted_aqi=round(float(pred_value), 2)
-                )
-            )
+        return {
+            "city": result["city"],
+            "explainability": result.get("explainability"),
+        }
 
-    return PredictResponse(
-        city=payload.city,
-        status="success",
-        predictions=predictions
-    )
+    except Exception as err:
+        raise HTTPException(status_code=500, detail=str(err)) from err

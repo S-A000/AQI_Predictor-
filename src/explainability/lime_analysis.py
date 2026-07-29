@@ -18,15 +18,15 @@ class AQILimeAnalyzer:
         self.explainer = None
 
     def load_assets(self, background_size=300):
-        """Loads the model and datasets, isolating the 626 features[cite: 1]."""
-        print(f"📦 Loading model from {self.model_path}[cite: 1]...")
+        """Loads the model and datasets, isolating the features."""
+        print(f"📦 Loading model from {self.model_path}...")
         self.model = joblib.load(self.model_path)
         
-        print(f"📊 Loading training and test data splits[cite: 1]...")
+        print(f"📊 Loading training and test data splits...")
         train_df = pd.read_parquet(self.train_data_path)
         test_df = pd.read_parquet(self.test_data_path)
         
-        # Drop metadata and target columns to match the 626 feature vector
+        # Drop metadata and target columns to match the feature vector
         drop_cols = [
             'timestamp', 'city', 'country', 'created_at', 'source', 
             'aqi_category', 'dominant_pollutant', 
@@ -41,7 +41,7 @@ class AQILimeAnalyzer:
         ).values
         
         self.X_test = test_df[self.feature_names]
-        print(f"🎯 Feature matrix ready with {len(self.feature_names)} features[cite: 1].")
+        print(f"🎯 Feature matrix ready with {len(self.feature_names)} features.")
 
     def initialize_explainer(self):
         """Initializes the LIME Tabular Explainer for regression tasks."""
@@ -65,16 +65,22 @@ class AQILimeAnalyzer:
         exp = self.explainer.explain_instance(
             data_row=instance,
             predict_fn=predict_fn,
-            num_features=10
+            num_features=10,
+            num_samples=500  # Optimized for fast execution (default is 5000)
         )
         
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
         exp.save_to_file(save_path)
         print(f"✅ LIME explanation successfully saved to {save_path}")
+        
+        # Print top features in terminal directly
+        print("\n📊 Top LIME Features for this instance:")
+        for feat, weight in exp.as_list():
+            print(f" - {feat}: {weight:.4f}")
+            
         return exp
 
 if __name__ == "__main__":
-    # Run standalone test
     analyzer = AQILimeAnalyzer()
     analyzer.load_assets(background_size=300)
     analyzer.initialize_explainer()

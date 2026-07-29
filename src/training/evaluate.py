@@ -1,7 +1,7 @@
 """
 Suggested path: src/training/evaluate.py
 
-SINGLE RESPONSIBILITY: Load trained baseline model artifact from registry,
+SINGLE RESPONSIBILITY: Load trained baseline/horizon model artifact from registry,
 strictly verify model version and feature schema, evaluate performance on 
 validation and test splits, compute regression and residual metrics, generate plots,
 and optionally log metrics/artifacts to MLflow in an enterprise-grade MLOps setup.
@@ -41,7 +41,7 @@ except ImportError:
     HAS_MLFLOW = False
 
 from src.training.dataset import DatasetSplits, load_prepared_splits
-from src.utils.constants import EXPECTED_FEATURE_COUNT, MODELS_DIR, TARGET_COL
+from src.utils.constants import MODELS_DIR, TARGET_COL
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -114,11 +114,11 @@ class ModelEvaluator:
 
     def __init__(
         self,
-        model_path: Path | str = MODELS_DIR / "registry" / "ridge_baseline.joblib",
-        metadata_path: Path | str = MODELS_DIR / "registry" / "ridge_metadata.json",
+        model_path: Path | str = MODELS_DIR / "registry" / "24h_model.joblib",
+        metadata_path: Path | str = MODELS_DIR / "registry" / "24h_metadata.json",
         evaluation_dir: Path | str = MODELS_DIR / "registry" / "evaluation",
         expected_model_version: str = "1.0.0",
-        expected_algorithm: str = "Ridge Regression",
+        expected_algorithm: str = "Gradient_Boosting",
         enable_mlflow: bool = False,
     ) -> None:
         self.model_path = Path(model_path)
@@ -167,8 +167,7 @@ class ModelEvaluator:
             raise ModelVersionError(error_msg)
 
         logger.info(
-            "Model Metadata Verified Successfully [Name: %s | Version: %s | Algorithm: %s]",
-            metadata.get("model_name"),
+            "Model Metadata Verified Successfully [Version: %s | Algorithm: %s]",
             actual_version,
             actual_algorithm,
         )
@@ -422,7 +421,7 @@ class ModelEvaluator:
         """Save evaluation metadata JSON artifact."""
         metadata_path = self.evaluation_dir / "evaluation_metadata.json"
         metadata_payload: Dict[str, Any] = {
-            "model_name": self.metadata.get("model_name", "Ridge Baseline"),
+            "model_name": self.metadata.get("algorithm", "24h_Gradient_Boosting"),
             "model_version": self.expected_model_version,
             "evaluation_timestamp": datetime.now(timezone.utc).isoformat(),
             "feature_count": len(splits.feature_names),

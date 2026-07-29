@@ -249,19 +249,44 @@ The feature engineering pipeline is orchestrated by [build_features.py](file:///
 
 ```mermaid
 graph TB
-    RAW["Merged Raw Data<br/>24 columns"] --> BF["build_features.py<br/>FeatureBuilder.build_all()"]
-    
-    BF --> T1["1. temporal_features.py<br/>add_temporal_features()"]
-    BF --> T2["2. lag_features.py<br/>add_lag_features()"]
-    BF --> T3["3. rolling_features.py<br/>add_rolling_features()"]
-    BF --> T4["4. trend_features.py<br/>add_trend_features()"]
-    BF --> T5["5. spatial_features.py<br/>add_spatial_features()"]
-    BF --> T6["6. interaction_features.py<br/>add_interaction_features()"]
-    BF --> T7["7. air_quality_features.py<br/>add_air_quality_features()"]
-    BF --> T8["8. scaling_encoding.py<br/>apply_scaling_encoding()"]
-    BF --> T9["9. forecast_targets.py<br/>ForecastTargetBuilder.build()"]
-    
-    T1 --> FV["626-Feature Vector<br/>+ 3 Target Columns<br/>+ 3 Metadata Columns<br/>= 632 total columns"]
+    %% =========================
+    %% RAW INPUT
+    %% =========================
+    RAW["🌐 Merged Raw Dataset<br/><span style='font-size:12px'>AQICN + OpenWeather + Historical Backfill</span><br/><b>24 Raw Columns</b>"]
+
+    RAW --> FB["⚙️ Feature Engineering Orchestrator<br/><b>build_features.py</b><br/><span style='font-size:12px'>FeatureBuilder.build_all()</span>"]
+
+    %% =========================
+    %% FEATURE MODULES
+    %% =========================
+    subgraph FE["🧠 Feature Engineering Modules"]
+        direction TB
+
+        T1["🕒 Temporal Features<br/><b>temporal_features.py</b><br/>hour, day, month, weekday, season"]
+        T2["⏪ Lag Features<br/><b>lag_features.py</b><br/>AQI / pollutants lag signals"]
+        T3["📊 Rolling Features<br/><b>rolling_features.py</b><br/>rolling mean, std, min, max"]
+        T4["📈 Trend Features<br/><b>trend_features.py</b><br/>AQI change rate, pct-change, momentum"]
+        T5["📍 Spatial Features<br/><b>spatial_features.py</b><br/>city, latitude, longitude signals"]
+        T6["🔗 Interaction Features<br/><b>interaction_features.py</b><br/>weather × pollutant interactions"]
+        T7["🌫️ Air Quality Features<br/><b>air_quality_features.py</b><br/>pollutant ratios and AQI indicators"]
+        T8["📐 Scaling & Encoding<br/><b>scaling_encoding.py</b><br/>scaler, city encoding, numeric alignment"]
+        T9["🎯 Forecast Targets<br/><b>forecast_targets.py</b><br/>target_aqi_t+24 / t+48 / t+72"]
+    end
+
+    FB --> T1
+    FB --> T2
+    FB --> T3
+    FB --> T4
+    FB --> T5
+    FB --> T6
+    FB --> T7
+    FB --> T8
+    FB --> T9
+
+    %% =========================
+    %% FEATURE VECTOR
+    %% =========================
+    T1 --> FV
     T2 --> FV
     T3 --> FV
     T4 --> FV
@@ -271,13 +296,55 @@ graph TB
     T8 --> FV
     T9 --> FV
 
-    FV --> SPLIT["Chronological Split"]
-    SPLIT --> TR["features_train.parquet<br/>66,550 rows"]
-    SPLIT --> VA["features_val.parquet<br/>14,982 rows"]
-    SPLIT --> TE["features_test.parquet<br/>14,849 rows"]
-    
-    style FV fill:#e94560,color:#fff
-    style SPLIT fill:#533483,color:#fff
+    FV["🧬 Final Training Matrix<br/><b>626 Input Features</b><br/>+ 3 Forecast Targets<br/>+ 3 Metadata Columns<br/><b>= 632 Total Columns</b>"]
+
+    %% =========================
+    %% SPLIT
+    %% =========================
+    FV --> SPLIT[" Chronological Train / Validation / Test Split<br/><span style='font-size:12px'>Time-aware split to prevent data leakage</span>"]
+
+    SPLIT --> TR[" Training Set<br/><b>features_train.parquet</b><br/>66,550 rows"]
+    SPLIT --> VA[" Validation Set<br/><b>features_val.parquet</b><br/>14,982 rows"]
+    SPLIT --> TE[" Test Set<br/><b>features_test.parquet</b><br/>14,849 rows"]
+
+    %% =========================
+    %% DOWNSTREAM
+    %% =========================
+    TR --> TRAIN[" Model Training Pipeline<br/>Random Forest / Ridge / XGBoost / LSTM"]
+    VA --> TRAIN
+    TE --> EVAL[" Final Model Evaluation<br/>RMSE · MAE · R²"]
+
+    TRAIN --> REG[" MLflow Model Registry<br/>24h · 48h · 72h Models"]
+    EVAL --> REG
+
+    %% =========================
+    %% STYLING
+    %% =========================
+    style RAW fill:#0f172a,stroke:#38bdf8,color:#fff,stroke-width:2px
+    style FB fill:#1e293b,stroke:#a78bfa,color:#fff,stroke-width:2px
+
+    style FE fill:#111827,stroke:#64748b,color:#fff,stroke-width:1.5px
+
+    style T1 fill:#312e81,stroke:#c4b5fd,color:#fff
+    style T2 fill:#1e3a8a,stroke:#93c5fd,color:#fff
+    style T3 fill:#164e63,stroke:#67e8f9,color:#fff
+    style T4 fill:#065f46,stroke:#6ee7b7,color:#fff
+    style T5 fill:#713f12,stroke:#fcd34d,color:#fff
+    style T6 fill:#7c2d12,stroke:#fdba74,color:#fff
+    style T7 fill:#881337,stroke:#fda4af,color:#fff
+    style T8 fill:#4c1d95,stroke:#ddd6fe,color:#fff
+    style T9 fill:#831843,stroke:#f9a8d4,color:#fff
+
+    style FV fill:#e94560,stroke:#fff,color:#fff,stroke-width:3px
+    style SPLIT fill:#533483,stroke:#fff,color:#fff,stroke-width:2px
+
+    style TR fill:#14532d,stroke:#86efac,color:#fff
+    style VA fill:#713f12,stroke:#fde68a,color:#fff
+    style TE fill:#1e3a8a,stroke:#bfdbfe,color:#fff
+
+    style TRAIN fill:#7c2d12,stroke:#fed7aa,color:#fff,stroke-width:2px
+    style EVAL fill:#0f766e,stroke:#99f6e4,color:#fff,stroke-width:2px
+    style REG fill:#facc15,stroke:#92400e,color:#000,stroke-width:2px
 ```
 
 ### 2.2 Feature Vector Breakdown (626 Features)
