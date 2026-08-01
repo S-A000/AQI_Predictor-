@@ -21,3 +21,10 @@ models/
 # OS generated files
 .DS_Store
 Thumbs.db
+
+# MLflow runtime files
+mlflow.db
+mlruns/
+
+# GitHub Actions diagnostic output
+training.log

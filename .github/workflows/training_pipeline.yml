@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
   schedule:
-    # Every day at 01:30 UTC = 06:30 AM Pakistan time
+    # Daily at 01:30 UTC = 06:30 AM Pakistan time
     - cron: "30 1 * * *"
 
 permissions:
@@ -19,22 +19,43 @@ jobs:
   daily-training:
     name: Train 24h, 48h and 72h Models
     runs-on: ubuntu-latest
-
-    # Local run took around 24 minutes.
-    # GitHub runner may take longer.
     timeout-minutes: 120
 
     env:
+      # ========================================================
+      # Python
+      # ========================================================
       PYTHONUNBUFFERED: "1"
       PYTHONPATH: ${{ github.workspace }}
+      MPLBACKEND: Agg
 
+      # ========================================================
+      # External APIs
+      # ========================================================
+      AQICN_API_KEY: ${{ secrets.AQICN_API_KEY }}
+      OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+
+      # ========================================================
+      # Google Cloud / BigQuery
+      # ========================================================
       GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       BIGQUERY_DATASET_ID: ${{ secrets.BIGQUERY_DATASET_ID }}
       BIGQUERY_FEATURE_TABLE: ${{ secrets.BIGQUERY_FEATURE_TABLE }}
       BIGQUERY_LOCATION: ${{ secrets.BIGQUERY_LOCATION }}
 
-      MLFLOW_TRACKING_URI: sqlite:///mlflow.db
+      # ========================================================
+      # MLflow
+      #
+      # github.workspace begins with /home/runner.
+      # Therefore the final URI becomes:
+      # sqlite:////home/runner/.../mlflow.db
+      # ========================================================
+      MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
+      MLFLOW_ARTIFACT_ROOT: ${{ github.workspace }}/mlruns
 
+      # ========================================================
+      # Email alerts
+      # ========================================================
       ALERT_SMTP_HOST: ${{ secrets.ALERT_SMTP_HOST }}
       ALERT_SMTP_PORT: ${{ secrets.ALERT_SMTP_PORT }}
       ALERT_SMTP_USE_TLS: ${{ secrets.ALERT_SMTP_USE_TLS }}
@@ -44,9 +65,15 @@ jobs:
       ALERT_TO_EMAILS: ${{ secrets.ALERT_TO_EMAILS }}
 
     steps:
+      # ========================================================
+      # 1. CHECKOUT REPOSITORY
+      # ========================================================
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ========================================================
+      # 2. AUTHENTICATE TO GOOGLE CLOUD
+      # ========================================================
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
         with:
@@ -54,20 +81,36 @@ jobs:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
 
+      # ========================================================
+      # 3. SET UP PYTHON
+      # ========================================================
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
 
+      # ========================================================
+      # 4. INSTALL DEPENDENCIES
+      # ========================================================
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Validate configuration
+        working-directory: ${{ github.workspace }}
         shell: bash
         run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      # ========================================================
+      # 5. VALIDATE REQUIRED CONFIGURATION
+      # ========================================================
+      - name: Validate configuration
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
           python - <<'PY'
           import os
 
@@ -76,32 +119,254 @@ jobs:
               "BIGQUERY_DATASET_ID",
               "BIGQUERY_FEATURE_TABLE",
               "BIGQUERY_LOCATION",
+              "MLFLOW_TRACKING_URI",
+              "MLFLOW_ARTIFACT_ROOT",
           ]
 
           missing_variables = [
-              name
-              for name in required_variables
-              if not os.getenv(name)
+              variable
+              for variable in required_variables
+              if not os.getenv(variable)
           ]
 
           if missing_variables:
               raise RuntimeError(
-                  f"Missing required secrets: {missing_variables}"
+                  "Missing required environment variables: "
+                  f"{missing_variables}"
               )
 
-          print("Training configuration is available.")
+          print("Configuration validation successful.")
+          print("GCP project:", os.environ["GCP_PROJECT_ID"])
+          print(
+              "BigQuery dataset:",
+              os.environ["BIGQUERY_DATASET_ID"],
+          )
+          print(
+              "BigQuery table:",
+              os.environ["BIGQUERY_FEATURE_TABLE"],
+          )
+          print(
+              "MLflow tracking URI:",
+              os.environ["MLFLOW_TRACKING_URI"],
+          )
+          print(
+              "MLflow artifact root:",
+              os.environ["MLFLOW_ARTIFACT_ROOT"],
+          )
           PY
 
+      # ========================================================
+      # 6. VERIFY PYTHON IMPORTS
+      # ========================================================
       - name: Verify Python packages
+        working-directory: ${{ github.workspace }}
+        shell: bash
         run: |
+          set -euo pipefail
+
           python -c "from google.cloud import bigquery; print('BigQuery import working')"
+          python -c "import mlflow; print('MLflow import working:', mlflow.__version__)"
+          python -c "import sklearn; print('Scikit-learn import working:', sklearn.__version__)"
           python -c "import src.feature_engineering.build_features; print('Feature engineering import working')"
           python -c "import src.training.run_pipeline; print('Training pipeline import working')"
 
-      - name: Run daily training pipeline
+      # ========================================================
+      # 7. REMOVE OLD WINDOWS MLFLOW STATE
+      # ========================================================
+      - name: Prepare clean MLflow storage
+        working-directory: ${{ github.workspace }}
+        shell: bash
         run: |
-          python -m src.training.run_pipeline
+          set -euo pipefail
 
+          echo "Workspace: $GITHUB_WORKSPACE"
+          echo "Removing old MLflow runtime files..."
+
+          rm -f "$GITHUB_WORKSPACE/mlflow.db"
+          rm -rf "$GITHUB_WORKSPACE/mlruns"
+
+          mkdir -p "$GITHUB_WORKSPACE/mlruns"
+
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          import mlflow
+
+          workspace = Path(
+              os.environ["GITHUB_WORKSPACE"]
+          ).resolve()
+
+          artifact_root = Path(
+              os.environ["MLFLOW_ARTIFACT_ROOT"]
+          ).resolve()
+
+          tracking_uri = os.environ[
+              "MLFLOW_TRACKING_URI"
+          ]
+
+          artifact_root.mkdir(
+              parents=True,
+              exist_ok=True,
+          )
+
+          mlflow.set_tracking_uri(
+              tracking_uri
+          )
+
+          print("Current directory:", Path.cwd())
+          print("Workspace:", workspace)
+          print("MLflow URI:", mlflow.get_tracking_uri())
+          print("Artifact root:", artifact_root)
+
+          invalid_values = [
+              "D:",
+              "/D:",
+              "D:/",
+              "D:\\",
+          ]
+
+          for value in invalid_values:
+              if value in tracking_uri:
+                  raise RuntimeError(
+                      "Invalid Windows MLflow path detected: "
+                      f"{tracking_uri}"
+                  )
+
+          if not os.access(artifact_root, os.W_OK):
+              raise PermissionError(
+                  "MLflow artifact directory is not writable: "
+                  f"{artifact_root}"
+              )
+
+          print("Clean MLflow storage is ready.")
+          PY
+
+      # ========================================================
+      # 8. VERIFY BIGQUERY READ ACCESS
+      # ========================================================
+      - name: Verify BigQuery training access
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from src.feature_store.bigquery_feature_store import (
+              BigQueryFeatureStore,
+          )
+
+          feature_store = BigQueryFeatureStore()
+
+          training_df = (
+              feature_store
+              .get_training_features()
+          )
+
+          if training_df.empty:
+              raise RuntimeError(
+                  "BigQuery returned an empty training dataset."
+              )
+
+          required_columns = {
+              "city",
+              "timestamp",
+              "aqi",
+          }
+
+          missing_columns = (
+              required_columns
+              - set(training_df.columns)
+          )
+
+          if missing_columns:
+              raise RuntimeError(
+                  "BigQuery dataset is missing columns: "
+                  f"{sorted(missing_columns)}"
+              )
+
+          print(
+              "BigQuery training access successful | "
+              f"rows={len(training_df)} | "
+              f"columns={len(training_df.columns)}"
+          )
+          PY
+
+      # ========================================================
+      # 9. RUN TRAINING PIPELINE
+      # ========================================================
+      - name: Run daily training pipeline
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: |
+          set -o pipefail
+
+          echo "Starting AQI multi-horizon training pipeline..."
+          echo "Workspace: $GITHUB_WORKSPACE"
+          echo "MLflow tracking URI: $MLFLOW_TRACKING_URI"
+          echo "MLflow artifact root: $MLFLOW_ARTIFACT_ROOT"
+
+          python -X faulthandler \
+            -m src.training.run_pipeline \
+            2>&1 | tee training.log
+
+      # ========================================================
+      # 10. ALWAYS UPLOAD COMPLETE TRAINING LOG
+      # ========================================================
+      - name: Upload training diagnostic log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-log-${{ github.run_number }}
+          path: training.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      # ========================================================
+      # 11. VERIFY GENERATED FILES
+      # ========================================================
+      - name: Verify generated artifacts
+        if: success()
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "======================================"
+          echo "Generated model artifacts"
+          echo "======================================"
+
+          find models \
+            -maxdepth 6 \
+            -type f \
+            2>/dev/null || true
+
+          echo ""
+          echo "======================================"
+          echo "Generated training artifacts"
+          echo "======================================"
+
+          find data/training \
+            -maxdepth 3 \
+            -type f \
+            2>/dev/null || true
+
+          echo ""
+          echo "======================================"
+          echo "Generated MLflow artifacts"
+          echo "======================================"
+
+          find mlruns \
+            -maxdepth 6 \
+            -type f \
+            2>/dev/null \
+            | head -200 || true
+
+          test -f "$GITHUB_WORKSPACE/mlflow.db"
+
+      # ========================================================
+      # 12. UPLOAD MODELS AND REPORTS
+      # ========================================================
       - name: Upload trained models and reports
         if: success()
         uses: actions/upload-artifact@v4
@@ -109,8 +374,10 @@ jobs:
           name: aqi-trained-models-${{ github.run_number }}
           if-no-files-found: warn
           retention-days: 30
+          compression-level: 6
           path: |
             models/
+            reports/
             data/training/scaler.joblib
             data/training/feature_build_report.json
             data/training/features_train.parquet
@@ -119,6 +386,9 @@ jobs:
             mlflow.db
             mlruns/
 
+      # ========================================================
+      # 13. SUCCESS SUMMARY
+      # ========================================================
       - name: Write training summary
         if: success()
         shell: bash
@@ -126,26 +396,60 @@ jobs:
           {
             echo "## AQI Training Pipeline"
             echo ""
-            echo "- Status: Successful"
-            echo "- Models: 24h, 48h and 72h"
-            echo "- Data source: BigQuery"
-            echo "- Run number: ${{ github.run_number }}"
-            echo "- Commit: ${{ github.sha }}"
+            echo "- **Status:** Successful"
+            echo "- **Horizons:** 24h, 48h and 72h"
+            echo "- **Data source:** BigQuery"
+            echo "- **Runner:** Ubuntu"
+            echo "- **Python:** 3.11"
+            echo "- **Run number:** ${{ github.run_number }}"
+            echo "- **Commit:** \`${{ github.sha }}\`"
+            echo "- **Models artifact:** aqi-trained-models-${{ github.run_number }}"
+            echo "- **Training log:** training-log-${{ github.run_number }}"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # ========================================================
+      # 14. FAILURE SUMMARY
+      # ========================================================
+      - name: Write failure diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo "## AQI Training Pipeline Failed"
+            echo ""
+            echo "- **Run number:** ${{ github.run_number }}"
+            echo "- **Commit:** \`${{ github.sha }}\`"
+            echo "- **Failed step:** Run daily training pipeline"
+            echo "- **Diagnostic artifact:** training-log-${{ github.run_number }}"
+            echo "- **MLflow URI:** \`$MLFLOW_TRACKING_URI\`"
+            echo "- **Artifact root:** \`$MLFLOW_ARTIFACT_ROOT\`"
+            echo ""
+            echo "Open the training log artifact to view the complete traceback."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ========================================================
+      # 15. SEND FAILURE EMAIL
+      # ========================================================
       - name: Send failure email
         if: failure()
         continue-on-error: true
+        working-directory: ${{ github.workspace }}
+        shell: bash
         run: |
           python - <<'PY'
-          from src.alerts.email_alert_service import EmailAlertService
+          from src.alerts.email_alert_service import (
+              EmailAlertService,
+          )
 
           EmailAlertService().send_alert(
-              title="Daily AQI Training Pipeline Failed",
+              title=(
+                  "Daily AQI Training Pipeline Failed"
+              ),
               message=(
-                  "The daily AQI model-training workflow failed in "
-                  "GitHub Actions. Open the repository Actions tab and "
-                  "inspect the latest Daily AQI Training Pipeline logs."
+                  "The daily AQI model-training workflow "
+                  "failed in GitHub Actions. Open the "
+                  "repository Actions tab and inspect the "
+                  "latest workflow run and training-log artifact."
               ),
               severity="critical",
           )
