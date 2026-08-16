@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+import joblib
 import pandas as pd
 
 # CHANGED: no longer imports each individual feature-engineering class.
@@ -14,6 +15,7 @@ import pandas as pd
 from src.feature_engineering.pipeline_steps import run_feature_engineering_steps
 from src.feature_engineering.scaling_encoding import ScalingEncodingEngineer
 from src.training.forecast_targets import ForecastTargetBuilder
+from src.utils.constants import METADATA_COLUMNS
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -30,14 +32,24 @@ def _chronological_split(
     train_pct: float = 0.70,
     val_pct: float = 0.15,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    df = df.sort_values(timestamp_col).reset_index(drop=True)
-    n = len(df)
-    train_end = int(n * train_pct)
-    val_end = int(n * (train_pct + val_pct))
+    df = df.sort_values([timestamp_col, "city"]).reset_index(drop=True)
+    unique_timestamps = df[timestamp_col].drop_duplicates().sort_values()
+    n_timestamps = len(unique_timestamps)
+    train_end = int(n_timestamps * train_pct)
+    val_end = int(n_timestamps * (train_pct + val_pct))
 
-    train_df = df.iloc[:train_end].copy()
-    val_df = df.iloc[train_end:val_end].copy()
-    test_df = df.iloc[val_end:].copy()
+    if train_end <= 0 or val_end <= train_end or val_end >= n_timestamps:
+        raise ValueError(
+            "Not enough distinct timestamps for chronological train/validation/test splits."
+        )
+
+    train_times = set(unique_timestamps.iloc[:train_end])
+    validation_times = set(unique_timestamps.iloc[train_end:val_end])
+    test_times = set(unique_timestamps.iloc[val_end:])
+
+    train_df = df[df[timestamp_col].isin(train_times)].copy()
+    val_df = df[df[timestamp_col].isin(validation_times)].copy()
+    test_df = df[df[timestamp_col].isin(test_times)].copy()
 
     logger.info(
         "Chronological split (Raw): train=%d, val=%d, test=%d", len(train_df), len(val_df), len(test_df),
@@ -45,16 +57,87 @@ def _chronological_split(
     return train_df, val_df, test_df
 
 
+def _canonicalize_observations(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize the production city/hour key before targets or splitting."""
+
+    required_columns = {"city", "timestamp", "aqi"}
+    missing_columns = required_columns - set(df.columns)
+    if missing_columns:
+        raise ValueError(
+            f"Training data is missing required columns: {sorted(missing_columns)}"
+        )
+
+    result = df.copy()
+    if "event_hour" in result.columns:
+        event_hours = pd.to_datetime(
+            result["event_hour"], utc=True, errors="coerce"
+        )
+        result["timestamp"] = event_hours.fillna(
+            pd.to_datetime(result["timestamp"], utc=True, errors="coerce")
+        )
+        result = result.drop(columns=["event_hour"])
+    else:
+        result["timestamp"] = pd.to_datetime(
+            result["timestamp"], utc=True, errors="coerce"
+        )
+
+    result["timestamp"] = result["timestamp"].dt.floor("h")
+    result = result.dropna(subset=["city"])
+    result["city"] = result["city"].astype(str).str.strip().str.title()
+    result = result[
+        result["city"].ne("") & result["timestamp"].notna()
+    ].copy()
+
+    before = len(result)
+    result = result.drop_duplicates(
+        subset=["city", "timestamp"], keep="last"
+    )
+    removed = before - len(result)
+    if removed:
+        logger.warning(
+            "Removed %d duplicate city/event-hour row(s) before target creation.",
+            removed,
+        )
+
+    return result.sort_values(["city", "timestamp"]).reset_index(drop=True)
+
+
 def build_all_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Runs Parts 1-7 (feature engineering only, no targets).
+    Run the canonical feature-engineering pipeline once.
 
-    CHANGED: delegates to run_feature_engineering_steps() from
-    pipeline_steps.py instead of hand-calling each engineer in sequence.
-    Output is IDENTICAL to before — same 7 classes, same order — this
-    change only removes the ability for this file's order to silently
-    drift away from src/prediction/feature_pipeline.py's order.
+    BigQuery currently contains raw/source columns plus a small number
+    of legacy/lightweight derived columns. Those derived columns are
+    removed first so the canonical pipeline regenerates them cleanly.
     """
+
+    df = df.copy()
+
+    precomputed_features = [
+        "hour",
+        "day",
+        "month",
+        "day_of_week",
+        "is_weekend",
+        "aqi_change_rate",
+        "aqi_rolling_mean_3h",
+    ]
+
+    columns_to_drop = [
+        col for col in precomputed_features
+        if col in df.columns
+    ]
+
+    if columns_to_drop:
+        logger.info(
+            "Removing %d precomputed BigQuery feature(s) before canonical "
+            "feature engineering: %s",
+            len(columns_to_drop),
+            columns_to_drop,
+        )
+
+        df = df.drop(columns=columns_to_drop)
+
     return run_feature_engineering_steps(df)
 
 
@@ -63,34 +146,37 @@ def build_features_pipeline(
     input_path: Path = INPUT_PATH,
     output_dir: Path = TRAINING_DIR,
     drop_warmup_nans: bool = True,
+    already_engineered: bool = False,
 ) -> dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("Loading %s", input_path)
     df = pd.read_parquet(input_path)
+    df = _canonicalize_observations(df)
 
-    # 1. CRITICAL FIX: Split FIRST before any feature engineering or scaling
-    train_df, val_df, test_df = _chronological_split(df)
-
-    # 2. Build targets on each split independently (or build on full before split, but targets don't leak features)
+    # Exact elapsed-time targets are constructed on the complete canonical
+    # timeline so valid labels at split boundaries are not discarded.
     target_builder = ForecastTargetBuilder()
-    train_df = target_builder.build(train_df)
-    val_df = target_builder.build(val_df)
-    test_df = target_builder.build(test_df)
+    df = target_builder.build(df)
     target_columns = target_builder.all_target_columns()
 
-    # 3. Run Parts 1-7 Feature Engineering SEPARATELY on each split
-    # (To prevent rolling/lag windows from crossing split boundaries)
-    logger.info("Running feature engineering on Train split...")
-    train_df = build_all_features(train_df)
+    train_df, val_df, test_df = _chronological_split(df)
 
-    logger.info("Running feature engineering on Validation split...")
-    val_df = build_all_features(val_df)
+    if already_engineered:
+        logger.info(
+            "Input is the engineered BigQuery feature table; skipping duplicate feature engineering."
+        )
+    else:
+        logger.info("Running feature engineering on Train split...")
+        train_df = build_all_features(train_df)
 
-    logger.info("Running feature engineering on Test split...")
-    test_df = build_all_features(test_df)
+        logger.info("Running feature engineering on Validation split...")
+        val_df = build_all_features(val_df)
 
-    if drop_warmup_nans:
+        logger.info("Running feature engineering on Test split...")
+        test_df = build_all_features(test_df)
+
+    if drop_warmup_nans and not already_engineered:
         before = len(train_df)
         train_df = train_df.dropna(subset=[c for c in train_df.columns if c not in target_columns])
         logger.info("Dropped %d warm-up/NaN row(s) from train split (%d -> %d).", before - len(train_df), before, len(train_df))
@@ -110,6 +196,39 @@ def build_features_pipeline(
     logger.info("Transforming Test split...")
     test_scaled = scaler_engineer.transform(test_df)
 
+    excluded_columns = set(target_columns) | set(METADATA_COLUMNS) | {
+        "date",
+        "city",
+        "split",
+        "event_hour",
+    }
+    ordered_feature_names = [
+        column for column in train_scaled.columns if column not in excluded_columns
+    ]
+    if not ordered_feature_names:
+        raise ValueError("Preprocessing produced an empty model feature schema.")
+
+    for split_name, split_df in {
+        "validation": val_scaled,
+        "test": test_scaled,
+    }.items():
+        split_features = [
+            column for column in split_df.columns if column not in excluded_columns
+        ]
+        if split_features != ordered_feature_names:
+            missing = [c for c in ordered_feature_names if c not in split_features]
+            unexpected = [c for c in split_features if c not in ordered_feature_names]
+            raise ValueError(
+                f"{split_name} preprocessing schema mismatch; "
+                f"missing={missing}, unexpected={unexpected}"
+            )
+
+    scaler_engineer.model_feature_columns_ = list(ordered_feature_names)
+    scaler_engineer.final_columns_ = list(train_scaled.columns)
+    scaler_path = output_dir / "scaler.joblib"
+    joblib.dump(scaler_engineer, scaler_path)
+    logger.info("Persisted fitted preprocessing state to %s", scaler_path)
+
     paths = {
         "train": output_dir / "features_train.parquet",
         "val": output_dir / "features_val.parquet",
@@ -124,6 +243,8 @@ def build_features_pipeline(
         "target_columns": target_columns,
         "split_sizes": {"train": len(train_scaled), "val": len(val_scaled), "test": len(test_scaled)},
         "final_columns": len(train_scaled.columns),
+        "ordered_feature_names": ordered_feature_names,
+        "preprocessor_path": str(scaler_path),
     }
     (output_dir / "feature_build_report.json").write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
 

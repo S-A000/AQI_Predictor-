@@ -171,20 +171,15 @@ jobs:
           python -c "import src.training.run_pipeline; print('Training pipeline import working')"
 
       # ========================================================
-      # 7. REMOVE OLD WINDOWS MLFLOW STATE
+      # 7. PREPARE MLFLOW STATE
       # ========================================================
-      - name: Prepare clean MLflow storage
+      - name: Prepare MLflow storage
         working-directory: ${{ github.workspace }}
         shell: bash
         run: |
           set -euo pipefail
 
           echo "Workspace: $GITHUB_WORKSPACE"
-          echo "Removing old MLflow runtime files..."
-
-          rm -f "$GITHUB_WORKSPACE/mlflow.db"
-          rm -rf "$GITHUB_WORKSPACE/mlruns"
-
           mkdir -p "$GITHUB_WORKSPACE/mlruns"
 
           python - <<'PY'
@@ -299,7 +294,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         shell: bash
         run: |
-          set -o pipefail
+          set -euo pipefail
 
           echo "Starting AQI multi-horizon training pipeline..."
           echo "Workspace: $GITHUB_WORKSPACE"
@@ -363,6 +358,63 @@ jobs:
             | head -200 || true
 
           test -f "$GITHUB_WORKSPACE/mlflow.db"
+
+          test -f data/training/scaler.joblib
+          test -f data/training/feature_build_report.json
+
+          for horizon in 24 48 72; do
+            test -f "models/registry/${horizon}h_model.joblib"
+            test -f "models/registry/${horizon}h_metadata.json"
+            test -f "models/registry/${horizon}h_bundle.joblib"
+          done
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          import joblib
+
+          from src.training.model_bundle import load_model_bundle
+
+          feature_report = json.loads(
+              Path("data/training/feature_build_report.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          expected_schema = feature_report.get("ordered_feature_names")
+          transformer = joblib.load("data/training/scaler.joblib")
+          if expected_schema != getattr(
+              transformer, "model_feature_columns_", None
+          ):
+              raise RuntimeError(
+                  "Persisted transformer/feature-report schema mismatch"
+              )
+
+          for horizon in (24, 48, 72):
+              registry = Path("models/registry")
+              metadata = json.loads(
+                  (registry / f"{horizon}h_metadata.json").read_text(
+                      encoding="utf-8"
+                  )
+              )
+              bundle = load_model_bundle(
+                  registry / f"{horizon}h_bundle.joblib"
+              )
+              if list(bundle.feature_names) != metadata.get("feature_names"):
+                  raise RuntimeError(
+                      f"{horizon}h bundle/metadata feature schema mismatch"
+                  )
+              if list(bundle.feature_names) != expected_schema:
+                  raise RuntimeError(
+                      f"{horizon}h bundle/preprocessor feature schema mismatch"
+                  )
+              if metadata.get("selection_metric") != "validation_rmse":
+                  raise RuntimeError(
+                      f"{horizon}h metadata has an invalid selection metric"
+                  )
+
+          print("All model, transformer, schema, and bundle artifacts are valid.")
+          PY
 
       # ========================================================
       # 12. UPLOAD MODELS AND REPORTS

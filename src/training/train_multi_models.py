@@ -1,8 +1,8 @@
 """
 Suggested path: src/training/train_multi_models.py
 
-SINGLE RESPONSIBILITY: Train multiple candidate algorithms (Ridge, Random Forest, 
-Gradient Boosting), evaluate performance, log runs to MLflow Tracking, compare 
+SINGLE RESPONSIBILITY: Train multiple candidate algorithms (Ridge, Random Forest,
+Gradient Boosting), evaluate performance, log runs to MLflow Tracking, compare
 metrics, and auto-register the best performing model into MLflow Model Registry.
 """
 
@@ -19,135 +19,221 @@ import mlflow.sklearn
 from mlflow.models import infer_signature
 import numpy as np
 import pandas as pd
-# 🔥 FAST Multi-threaded Imports
 from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
 from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 from src.training.dataset import DatasetSplits, load_prepared_splits
-from src.utils.constants import MODELS_DIR
+from src.training.model_bundle import ModelBundle, save_model_bundle
+from src.utils.constants import MODELS_DIR, PROCESSED_DATA_DIR
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# MLflow Base Configuration Templates
 EXPERIMENT_NAME_TEMPLATE = "AQI_Model_Comparison_{horizon_hours}H"
 REGISTERED_MODEL_NAME_TEMPLATE = "AQI_Forecaster_{horizon_hours}H"
 
 
 class MultiModelTrainer:
-    """
-    Automated Multi-Model Training and MLflow Registry Pipeline.
-    """
+    """Automated Multi-Model Training and MLflow Registry Pipeline."""
 
-    def __init__(self, experiment_name: str | None = None) -> None:
+    def __init__(
+        self,
+        experiment_name: str | None = None,
+        preprocessor: Any | None = None,
+        preprocessor_path: Path | str | None = None,
+    ) -> None:
         self.experiment_name = experiment_name
+        self.preprocessor = preprocessor
+        self.preprocessor_path = Path(
+            preprocessor_path or (PROCESSED_DATA_DIR / "scaler.joblib")
+        )
+        self.selected_test_metrics_: Dict[str, float] = {}
 
     def _get_candidate_models(self) -> Dict[str, Any]:
         """Returns optimized candidate model architectures for fast execution."""
         return {
             "Ridge_Regression": Ridge(alpha=10.0, random_state=42),
-            "Random_Forest": RandomForestRegressor(n_estimators=50, max_depth=8, random_state=42, n_jobs=-1),
-            "Gradient_Boosting": HistGradientBoostingRegressor(max_iter=100, learning_rate=0.1, max_depth=6, random_state=42),
+            "Random_Forest": RandomForestRegressor(
+                n_estimators=50,
+                max_depth=8,
+                random_state=42,
+                n_jobs=-1,
+            ),
+            "Gradient_Boosting": HistGradientBoostingRegressor(
+                max_iter=100,
+                learning_rate=0.1,
+                max_depth=6,
+                random_state=42,
+            ),
         }
 
-    def _evaluate_model(self, model: Any, X: pd.DataFrame, y: pd.Series) -> Dict[str, float]:
-        """Calculates standard regression evaluation metrics."""
-        preds = model.predict(X)
-        mse = mean_squared_error(y, preds)
+    def _evaluate_model(
+        self,
+        model: Any,
+        X: pd.DataFrame,
+        y: pd.Series,
+    ) -> Dict[str, float]:
+        """Calculate standard regression evaluation metrics."""
+        predictions = model.predict(X)
+        mse = mean_squared_error(y, predictions)
         return {
             "rmse": float(np.sqrt(mse)),
-            "mae": float(mean_absolute_error(y, preds)),
-            "r2": float(r2_score(y, preds)),
+            "mae": float(mean_absolute_error(y, predictions)),
+            "r2": float(r2_score(y, predictions)),
         }
 
     def train_and_evaluate_all(
-        self, splits: DatasetSplits, horizon_hours: int
+        self,
+        splits: DatasetSplits,
+        horizon_hours: int,
     ) -> Tuple[str, float, Any]:
-        """
-        Trains all candidate models, logs runs to MLflow, compares performance,
-        and identifies the best performing model for a specific horizon.
-        """
-        exp_name = self.experiment_name or EXPERIMENT_NAME_TEMPLATE.format(horizon_hours=horizon_hours)
-        mlflow.set_experiment(exp_name)
+        """Select by validation RMSE, then evaluate the winner once on test."""
+        experiment_name = self.experiment_name or EXPERIMENT_NAME_TEMPLATE.format(
+            horizon_hours=horizon_hours
+        )
+        mlflow.set_experiment(experiment_name)
+        registered_model_name = REGISTERED_MODEL_NAME_TEMPLATE.format(
+            horizon_hours=horizon_hours
+        )
 
-        registered_model_name = REGISTERED_MODEL_NAME_TEMPLATE.format(horizon_hours=horizon_hours)
-
-        logger.info("Starting Multi-Model Benchmark & MLflow Experiment Tracking for %dH Horizon...", horizon_hours)
-        candidate_models = self._get_candidate_models()
+        logger.info(
+            "Starting Multi-Model Benchmark & MLflow Experiment Tracking for %dH Horizon...",
+            horizon_hours,
+        )
 
         best_model_name = ""
-        best_test_rmse = float("inf")
-        best_model_artifact = None
+        best_validation_rmse = float("inf")
+        best_model_artifact: Any | None = None
         best_run_id = ""
+        best_artifact_name = ""
+        best_train_metrics: Dict[str, float] = {}
+        best_validation_metrics: Dict[str, float] = {}
 
-        for model_name, model_instance in candidate_models.items():
+        for model_name, model_instance in self._get_candidate_models().items():
             logger.info("--------------------------------------------------")
-            logger.info("Training Candidate Model: %s (%dH Horizon)", model_name, horizon_hours)
+            logger.info(
+                "Training Candidate Model: %s (%dH Horizon)",
+                model_name,
+                horizon_hours,
+            )
 
-            with mlflow.start_run(run_name=f"{model_name}_{horizon_hours}H") as run:
-                # 1. Fit Model
+            with mlflow.start_run(
+                run_name=f"{model_name}_{horizon_hours}H"
+            ) as run:
                 model_instance.fit(splits.X_train, splits.y_train)
 
-                # 2. Evaluate on Validation & Test Sets
-                val_metrics = self._evaluate_model(model_instance, splits.X_val, splits.y_val)
-                test_metrics = self._evaluate_model(model_instance, splits.X_test, splits.y_test)
+                train_metrics = self._evaluate_model(
+                    model_instance, splits.X_train, splits.y_train
+                )
+                validation_metrics = self._evaluate_model(
+                    model_instance, splits.X_val, splits.y_val
+                )
 
                 logger.info(
-                    "[%s - %dH] Val RMSE: %.4f | Test RMSE: %.4f | Test R²: %.4f", 
-                    model_name, horizon_hours, val_metrics["rmse"], test_metrics["rmse"], test_metrics["r2"]
+                    "[%s - %dH] Train RMSE: %.4f | Validation RMSE: %.4f",
+                    model_name,
+                    horizon_hours,
+                    train_metrics["rmse"],
+                    validation_metrics["rmse"],
                 )
 
-                # 3. Log Parameters and Metrics to MLflow
                 if hasattr(model_instance, "get_params"):
                     mlflow.log_params(model_instance.get_params())
-
                 mlflow.log_param("horizon_hours", horizon_hours)
+                mlflow.log_param("selection_metric", "validation_rmse")
+                for split_name, metrics in (
+                    ("train", train_metrics),
+                    ("val", validation_metrics),
+                ):
+                    for metric_name, metric_value in metrics.items():
+                        mlflow.log_metric(
+                            f"{split_name}_{metric_name}", metric_value
+                        )
 
-                mlflow.log_metric("val_rmse", val_metrics["rmse"])
-                mlflow.log_metric("val_mae", val_metrics["mae"])
-                mlflow.log_metric("val_r2", val_metrics["r2"])
-                mlflow.log_metric("test_rmse", test_metrics["rmse"])
-                mlflow.log_metric("test_mae", test_metrics["mae"])
-                mlflow.log_metric("test_r2", test_metrics["r2"])
-
-                # 4. Infer Model Signature and Log Model Artifact
-                val_preds = model_instance.predict(splits.X_val)
-                signature = infer_signature(splits.X_val, val_preds)
-
+                validation_predictions = model_instance.predict(splits.X_val)
+                signature = infer_signature(
+                    splits.X_val, validation_predictions
+                )
+                artifact_name = f"{model_name}_{horizon_hours}h_model"
                 mlflow.sklearn.log_model(
-                sk_model=model_instance,
-                name=f"{model_name}_{horizon_hours}h_model",
-                signature=signature,
-                input_example=splits.X_val.head(5),
-                serialization_format="cloudpickle",
+                    sk_model=model_instance,
+                    name=artifact_name,
+                    signature=signature,
+                    input_example=splits.X_val.head(5),
+                    serialization_format="cloudpickle",
                 )
 
-                # 5. Check if this is the best model so far
-                if test_metrics["rmse"] < best_test_rmse:
-                    best_test_rmse = test_metrics["rmse"]
+                # Iteration order is the deterministic tie-breaker. Test data
+                # is never evaluated or consulted during candidate ranking.
+                if validation_metrics["rmse"] < best_validation_rmse:
+                    best_validation_rmse = validation_metrics["rmse"]
                     best_model_name = model_name
                     best_model_artifact = model_instance
                     best_run_id = run.info.run_id
+                    best_artifact_name = artifact_name
+                    best_train_metrics = train_metrics
+                    best_validation_metrics = validation_metrics
+
+        if best_model_artifact is None:
+            raise RuntimeError("No candidate model completed training successfully.")
+
+        test_metrics = self._evaluate_model(
+            best_model_artifact, splits.X_test, splits.y_test
+        )
+        self.selected_test_metrics_ = dict(test_metrics)
+
+        with mlflow.start_run(run_id=best_run_id):
+            for metric_name, metric_value in test_metrics.items():
+                mlflow.log_metric(f"test_{metric_name}", metric_value)
+            mlflow.log_metric(
+                "selected_validation_rmse", best_validation_rmse
+            )
 
         logger.info("==================================================")
-        logger.info("WINNING MODEL [%dH]: %s with Test RMSE: %.4f", horizon_hours, best_model_name, best_test_rmse)
+        logger.info(
+            "WINNING MODEL [%dH]: %s with Validation RMSE: %.4f | Final Test RMSE: %.4f",
+            horizon_hours,
+            best_model_name,
+            best_validation_rmse,
+            test_metrics["rmse"],
+        )
         logger.info("==================================================")
 
-        # Step 6: Register the Best Model in MLflow Model Registry
-        self._register_best_model(best_run_id, best_model_name, registered_model_name)
+        self._register_best_model(
+            best_run_id,
+            best_model_name,
+            registered_model_name,
+            best_artifact_name,
+        )
+        self._save_best_model_locally(
+            best_model_artifact,
+            best_model_name,
+            splits,
+            train_metrics=best_train_metrics,
+            validation_metrics=best_validation_metrics,
+            test_metrics=test_metrics,
+            horizon_hours=horizon_hours,
+            run_id=best_run_id,
+        )
 
-        # Step 7: Save Best Model locally to models/registry/
-        self._save_best_model_locally(best_model_artifact, best_model_name, splits, best_test_rmse, horizon_hours)
+        # The historical return contract exposes the final test RMSE.
+        return best_model_name, test_metrics["rmse"], best_model_artifact
 
-        return best_model_name, best_test_rmse, best_model_artifact
-
-    def _register_best_model(self, run_id: str, model_name: str, registered_model_name: str) -> None:
-        """Registers the winning model run into MLflow Model Registry."""
-        model_uri = f"runs:/{run_id}/model"
+    def _register_best_model(
+        self,
+        run_id: str,
+        model_name: str,
+        registered_model_name: str,
+        artifact_name: str,
+    ) -> None:
+        """Register the validation-selected model in MLflow Model Registry."""
+        model_uri = f"runs:/{run_id}/{artifact_name}"
         logger.info(
             "Registering '%s' (Run ID: %s) to MLflow Model Registry under name '%s'...",
-            model_name, run_id, registered_model_name
+            model_name,
+            run_id,
+            registered_model_name,
         )
 
         try:
@@ -155,36 +241,80 @@ class MultiModelTrainer:
                 model_uri=model_uri,
                 name=registered_model_name,
             )
-            logger.info("Successfully registered model version %s in MLflow Model Registry!", registered_model.version)
+            logger.info(
+                "Successfully registered model version %s in MLflow Model Registry!",
+                registered_model.version,
+            )
         except Exception as err:
             logger.error("Failed to register model in MLflow Registry: %s", err)
 
+    def _get_fitted_preprocessor(self) -> Any:
+        if self.preprocessor is not None:
+            return self.preprocessor
+        if not self.preprocessor_path.exists():
+            raise FileNotFoundError(
+                f"Fitted preprocessing artifact missing at: {self.preprocessor_path}"
+            )
+        return joblib.load(self.preprocessor_path)
+
     def _save_best_model_locally(
-        self, model: Any, model_name: str, splits: DatasetSplits, test_rmse: float, horizon_hours: int
+        self,
+        model: Any,
+        model_name: str,
+        splits: DatasetSplits,
+        *,
+        train_metrics: Dict[str, float],
+        validation_metrics: Dict[str, float],
+        test_metrics: Dict[str, float],
+        horizon_hours: int,
+        run_id: str,
     ) -> None:
-        """Saves winning model and metadata to local disk directory for predictor compatibility."""
+        """Save the winner, metadata, and complete inference bundle locally."""
         registry_dir = MODELS_DIR / "registry"
         registry_dir.mkdir(parents=True, exist_ok=True)
 
         model_path = registry_dir / f"{horizon_hours}h_model.joblib"
         metadata_path = registry_dir / f"{horizon_hours}h_metadata.json"
-
+        bundle_path = registry_dir / f"{horizon_hours}h_bundle.joblib"
         joblib.dump(model, model_path)
 
+        training_timestamp = datetime.now(timezone.utc).isoformat()
         metadata = {
             "model_version": "1.0.0",
             "algorithm": model_name,
             "horizon_hours": horizon_hours,
             "feature_names": splits.feature_names,
             "feature_count": len(splits.feature_names),
-            "best_test_rmse": round(test_rmse, 4),
-            "training_timestamp": datetime.now(timezone.utc).isoformat(),
+            "selection_metric": "validation_rmse",
+            "train_metrics": train_metrics,
+            "validation_metrics": validation_metrics,
+            "test_metrics": test_metrics,
+            "best_test_rmse": round(test_metrics["rmse"], 4),
+            "mlflow_run_id": run_id,
+            "training_timestamp": training_timestamp,
         }
 
-        with open(metadata_path, "w", encoding="utf-8") as f:
-            json.dump(metadata, f, indent=4)
+        with open(metadata_path, "w", encoding="utf-8") as file_handle:
+            json.dump(metadata, file_handle, indent=4)
 
-        logger.info("Saved local production model artifact and metadata for %dH to: %s", horizon_hours, registry_dir)
+        preprocessor = self._get_fitted_preprocessor()
+        bundle = ModelBundle.create(
+            model=model,
+            transformer=preprocessor,
+            feature_names=splits.feature_names,
+            horizon_hours=horizon_hours,
+            model_name=model_name,
+            model_version="1.0.0",
+            run_metadata={"mlflow_run_id": run_id},
+            training_metadata=metadata,
+        )
+        save_model_bundle(bundle, bundle_path)
+
+        logger.info(
+            "Saved local model, metadata, and bundle for %dH to: %s",
+            horizon_hours,
+            registry_dir,
+        )
 
 
 if __name__ == "__main__":
@@ -195,8 +325,13 @@ if __name__ == "__main__":
             logger.info("==================================================")
             splits = load_prepared_splits(horizon_hours=horizon)
             trainer = MultiModelTrainer()
-            winner_name, winner_rmse, _ = trainer.train_and_evaluate_all(splits, horizon_hours=horizon)
-            print(f"\n🎉 Multi-Model Training Complete for {horizon}H! Winner: {winner_name} (RMSE: {winner_rmse:.4f})")
+            winner_name, winner_rmse, _ = trainer.train_and_evaluate_all(
+                splits, horizon_hours=horizon
+            )
+            print(
+                f"\nMulti-Model Training Complete for {horizon}H! "
+                f"Winner: {winner_name} (RMSE: {winner_rmse:.4f})"
+            )
     except Exception as err:
         logger.exception("Multi-model training failed: %s", err)
         raise

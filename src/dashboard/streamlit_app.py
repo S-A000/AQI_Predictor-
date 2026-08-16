@@ -6,6 +6,7 @@ Run from the repository root:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -18,8 +19,12 @@ except ImportError:  # supports `streamlit run src/dashboard/streamlit_app.py`
     from components import CITY_META, inject_styles, render_city_selector, render_dashboard, render_topbar
 
 
-API_URL = "http://127.0.0.1:8000/api/v1/dashboard"
-ASSET_DIR = Path(__file__).resolve().parent / "assets"
+API_BASE_URL = os.getenv(
+    "API_BASE_URL",
+    "http://127.0.0.1:8000",
+).rstrip("/")
+API_URL = f"{API_BASE_URL}/api/v1/dashboard"
+ASSET_DIR = Path(__file__).resolve().parent / "assets"      
 
 
 def _fetch_dashboard() -> tuple[Mapping[str, Any] | None, str | None]:

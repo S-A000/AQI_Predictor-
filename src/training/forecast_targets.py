@@ -15,8 +15,8 @@ Why this exists:
     "predict the next 3 days" without either (a) future weather data
     + recursive step-by-step prediction, or (b) training the model
     to predict a FUTURE aqi value directly from CURRENT features.
-    This module implements the data-prep side of approach (b): shift
-    the aqi column BACKWARD in time (per city) so each row's target
+    This module implements the data-prep side of approach (b): exact
+    elapsed-time matching within each city so each row's target
     becomes "aqi N hours from THIS row's timestamp", not "aqi at
     this row's timestamp". The features stay as-is (still "what do
     we know right now") — only the target changes.
@@ -26,9 +26,9 @@ lag_features.py / rolling_features.py:
     Shifting must never pull a future value from a DIFFERENT city's
     row. Every method here groups by city first.
 
-CRITICAL — the last N rows per city become unusable:
-    A row at the very end of a city's timeline has no "72 hours
-    later" row to pull from — its target is NaN by construction, not
+CRITICAL — missing future event hours remain unusable:
+    A row without an exact city observation 72 hours later has no
+    target to match — its target is NaN by construction, not
     a data-quality bug. These rows must be dropped before training
     (this module flags them; dropping happens in the training
     pipeline, not here, to keep this module's responsibility to
@@ -79,14 +79,52 @@ class ForecastTargetBuilder:
         return f"target_aqi_t_{horizon_hours}"
 
     def _ensure_sorted(self, df: pd.DataFrame) -> pd.DataFrame:
-        return df.sort_values([self.city_col, self.timestamp_col]).reset_index(drop=True)
+        required_columns = {self.city_col, self.timestamp_col, self.aqi_col}
+        missing_columns = required_columns - set(df.columns)
+        if missing_columns:
+            raise ValueError(
+                "Cannot build forecast targets; missing columns: "
+                f"{sorted(missing_columns)}"
+            )
+
+        result = df.copy()
+        result = result.dropna(subset=[self.city_col])
+        result[self.city_col] = (
+            result[self.city_col].astype(str).str.strip().str.title()
+        )
+        result = result[result[self.city_col].ne("")]
+        result[self.timestamp_col] = pd.to_datetime(
+            result[self.timestamp_col], utc=True, errors="coerce"
+        )
+
+        invalid_timestamps = int(result[self.timestamp_col].isna().sum())
+        if invalid_timestamps:
+            logger.warning(
+                "Dropping %d row(s) with invalid timestamps before target matching.",
+                invalid_timestamps,
+            )
+            result = result.dropna(subset=[self.timestamp_col])
+
+        before_deduplication = len(result)
+        result = result.drop_duplicates(
+            subset=[self.city_col, self.timestamp_col], keep="last"
+        )
+        removed_duplicates = before_deduplication - len(result)
+        if removed_duplicates:
+            logger.warning(
+                "Removed %d duplicate city/timestamp row(s) before target matching.",
+                removed_duplicates,
+            )
+
+        return result.sort_values(
+            [self.city_col, self.timestamp_col]
+        ).reset_index(drop=True)
 
     def build(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Adds one target column per horizon. Rows near the end of
-        each city's timeline will have NaN targets for the larger
-        horizons — this is correct and expected (there's no "72
-        hours later" row for the last 71 hours of data). Call
+        each city's timeline, or rows followed by collection gaps,
+        will have NaN targets for the larger horizons. Call
         `drop_unusable_rows()` per-horizon before training that
         horizon's model.
         """
@@ -94,15 +132,34 @@ class ForecastTargetBuilder:
 
         for horizon in self.horizons_hours:
             col_name = self.target_column_name(horizon)
-            # shift(-N) pulls the value from N rows AHEAD in time
-            # within each city group — i.e. "N hours in the future",
-            # the mirror image of lag_features.py's shift(+N).
-            df[col_name] = df.groupby(self.city_col)[self.aqi_col].shift(-horizon)
+            # Shift the future observation's timestamp backward by the
+            # horizon, then require an exact same-city timestamp join.
+            future_values = df[
+                [self.city_col, self.timestamp_col, self.aqi_col]
+            ].copy()
+            future_values[self.timestamp_col] = (
+                future_values[self.timestamp_col]
+                - pd.Timedelta(hours=horizon)
+            )
+            future_values = future_values.rename(
+                columns={self.aqi_col: col_name}
+            )
+
+            if col_name in df.columns:
+                df = df.drop(columns=[col_name])
+
+            df = df.merge(
+                future_values,
+                on=[self.city_col, self.timestamp_col],
+                how="left",
+                sort=False,
+                validate="one_to_one",
+            )
 
             usable = df[col_name].notna().sum()
             logger.info(
                 "Created target '%s': %d/%d row(s) usable (rest are the "
-                "last %dh of each city's timeline, correctly NaN).",
+                "rows without an exact +%dh timestamp, correctly NaN).",
                 col_name, usable, len(df), horizon,
             )
 

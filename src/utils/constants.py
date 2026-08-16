@@ -33,6 +33,7 @@ METADATA_COLUMNS = {
     "source",
     "aqi_category",
     "dominant_pollutant",
+    "station_id"
 }
 
 # ------------------------------------------------------------------

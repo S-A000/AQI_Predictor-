@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
 
+from src.feature_engineering.air_quality_features import AirQualityFeatureEngineer
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -72,6 +73,9 @@ class ScalingEncodingEngineer:
         self.categorical_columns_: list[str] = []
         self.categories_map_: dict[str, list[str]] = {}
         self.vif_dropped_cols_: list[str] = []
+        self.pollution_engineer_ = AirQualityFeatureEngineer()
+        self.model_feature_columns_: list[str] = []
+        self.final_columns_: list[str] = []
 
         # NEW: tracks which expected features were missing on the most
         # recent transform() call (empty list = nothing was missing).
@@ -89,13 +93,21 @@ class ScalingEncodingEngineer:
 
     def _get_numeric_columns(self, df: pd.DataFrame) -> list[str]:
         """Return numeric columns excluding target, time, city, and raw categoricals."""
-        exclude = self.target_columns | {self.time_col, self.city_col, "dominant_pollutant", "aqi_category"}
+        exclude = self.target_columns | {self.time_col, self.city_col, "dominant_pollutant", "aqi_category","station_id"}
         return [c for c in df.select_dtypes(include=[np.number]).columns if c not in exclude]
 
     def _get_categorical_columns(self, df: pd.DataFrame, *, max_cardinality: int = 50) -> list[str]:
         """Return remaining object/category columns that need encoding."""
         cat_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
-        exclude = {self.time_col, self.city_col, "source", "created_at"}
+        exclude = {
+            self.time_col,
+            self.city_col,
+            "country",
+            "source",
+            "created_at",
+            "aqi_category",
+            "station_id"
+        }
         candidates = [c for c in cat_cols if c not in exclude]
 
         safe_cols = []
@@ -127,6 +139,8 @@ class ScalingEncodingEngineer:
                 self.fill_values_ = df[numeric_cols].mean().to_dict()
             elif self.fill_na_strategy == "zero":
                 self.fill_values_ = {c: 0.0 for c in numeric_cols}
+            elif self.fill_na_strategy == "forward":
+                self.fill_values_ = df[numeric_cols].median().to_dict()
 
         if self.fill_na_strategy in ("median", "mean", "zero"):
             for col, val in self.fill_values_.items():
@@ -136,8 +150,34 @@ class ScalingEncodingEngineer:
                         logger.info("Filled NaN in '%s' with %s (%.4f)", col, self.fill_na_strategy, val)
 
         elif self.fill_na_strategy == "forward":
-            df[numeric_cols] = df[numeric_cols].ffill().bfill()
-            logger.info("Filled NaN using forward/backward fill")
+            sort_columns = [
+                col for col in (self.city_col, self.time_col) if col in df.columns
+            ]
+            if sort_columns:
+                df = df.sort_values(sort_columns).copy()
+
+            if self.city_col in df.columns:
+                df[numeric_cols] = df.groupby(
+                    self.city_col, sort=False
+                )[numeric_cols].ffill()
+            else:
+                df[numeric_cols] = df[numeric_cols].ffill()
+
+            for col, value in self.fill_values_.items():
+                if col in df.columns and df[col].isna().any():
+                    df[col] = df[col].fillna(value)
+            logger.info(
+                "Filled NaN causally using forward fill and train-fitted medians."
+            )
+
+        unresolved = [
+            col for col in numeric_cols if col in df.columns and df[col].isna().any()
+        ]
+        if unresolved:
+            raise ValueError(
+                "Numeric missing values remain after train-fitted imputation: "
+                f"{unresolved}"
+            )
 
         return df
 
@@ -318,10 +358,10 @@ class ScalingEncodingEngineer:
             # pollutant column, a broken join) would look like clean,
             # valid data instead of an error.
             #
-            # Now: every missing column is (a) logged BY NAME so the
-            # gap is visible in monitoring/logs, (b) recorded on
-            # `last_transform_missing_features_` so a calling predictor
-            # can inspect or reject it, and (c) back-filled with this
+            # Now every missing fitted feature is logged by name and
+            # rejected before sklearn sees the row. Missing values within
+            # present columns are handled earlier with train-fitted stats.
+            # Historical fallback behavior was based on this
             # column's TRAINING-TIME fallback value (median/mean/zero,
             # per fill_na_strategy — already computed during fit and
             # stored in fill_values_) instead of a bare 0.0, so the
@@ -330,12 +370,13 @@ class ScalingEncodingEngineer:
             # --------------------------------------------------------
             missing_cols = [c for c in self.feature_columns_ if c not in df.columns]
             if missing_cols:
-                for col in missing_cols:
-                    df[col] = self.fill_values_.get(col, 0.0)
-                logger.warning(
-                    "Transform-time schema mismatch: %d expected feature(s) missing "
-                    "from input, back-filled with training fallback values: %s",
-                    len(missing_cols), missing_cols,
+                logger.error(
+                    "Transform-time schema mismatch: expected feature(s) missing: %s",
+                    missing_cols,
+                )
+                raise ValueError(
+                    "Transform input is missing fitted numeric features: "
+                    f"{missing_cols}"
                 )
             self.last_transform_missing_features_ = missing_cols
 
@@ -386,6 +427,7 @@ class ScalingEncodingEngineer:
         """Complete scaling & encoding pipeline."""
         before_cols = df.shape[1]
 
+        df = self.pollution_engineer_.add_pollution_index(df, fit=fit)
         df = self.fill_missing_values(df, fit=fit)
         df = self.drop_leakage_features(df)
         df = self.drop_high_vif_features(df, fit=fit)
@@ -393,6 +435,8 @@ class ScalingEncodingEngineer:
         df = self.scale_features(df, fit=fit)
 
         after_cols = df.shape[1]
+        if fit:
+            self.final_columns_ = list(df.columns)
         logger.info(
             "Scaling & encoding complete: %d columns -> %d columns (dropped: %s)",
             before_cols, after_cols, self.dropped_columns_,

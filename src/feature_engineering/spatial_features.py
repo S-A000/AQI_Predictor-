@@ -1,26 +1,3 @@
-"""
-spatial_features.py
-=====================
-Suggested path: src/feature_engineering/spatial_features.py
-
-Phase 3, Part 7 — Spatial Features.
-
-SINGLE RESPONSIBILITY: encode location identity (city, station,
-coordinates) into model-usable numeric form. Does not touch
-temporal/lag/rolling/trend/interaction/air-quality features — see
-sibling modules.
-
-No groupby-by-city needed: all row-wise, same reasoning as
-interaction_features.py / air_quality_features.py.
-
-Note on distance features: marked optional in the Phase 3 plan.
-With only 3 cities and no reference/monitoring-station coordinates
-beyond the 3 cities themselves, "distance to X" isn't meaningful yet
-(distance to what?) — implemented here as distance-between-cities
-only, ready to extend if a reference point (e.g. nearest industrial
-zone, largest traffic hub) is defined later.
-"""
-
 from __future__ import annotations
 
 import numpy as np
@@ -28,14 +5,35 @@ import pandas as pd
 
 from src.utils.logger import get_logger
 
+
 logger = get_logger(__name__)
+
+
+SUPPORTED_CITIES = (
+    "Islamabad",
+    "Karachi",
+    "Lahore",
+)
 
 
 class SpatialFeatureEngineer:
     """
-    Adds city one-hot encoding, station encoding, and normalized
-    lat/lon features. Distance features are opt-in via
-    `add_distance_features()` since they need a reference point.
+    Adds stable spatial features for AQI forecasting.
+
+    Production features:
+    - Fixed-schema city one-hot encoding
+    - Latitude / longitude interaction features
+
+    station_id is intentionally NOT used as a model feature.
+
+    Reasons:
+    - station IDs can have high cardinality
+    - new station IDs can appear at inference time
+    - historical rows may use station_id=-1
+    - live AQICN rows may contain real station IDs
+    - station identity can accidentally become a source-indicator
+
+    Distance features remain opt-in.
     """
 
     def __init__(
@@ -45,7 +43,7 @@ class SpatialFeatureEngineer:
         station_col: str = "station_id",
         latitude_col: str = "latitude",
         longitude_col: str = "longitude",
-    ):
+    ) -> None:
         self.city_col = city_col
         self.station_col = station_col
         self.latitude_col = latitude_col
@@ -55,84 +53,239 @@ class SpatialFeatureEngineer:
     # Helpers
     # --------------------------------------------------
 
-    def _has_columns(self, df: pd.DataFrame, *columns: str) -> bool:
-        missing = [c for c in columns if c not in df.columns]
+    def _has_columns(
+        self,
+        df: pd.DataFrame,
+        *columns: str,
+    ) -> bool:
+        missing = [
+            column
+            for column in columns
+            if column not in df.columns
+        ]
+
         if missing:
-            logger.warning("Column(s) not found, skipping dependent feature(s): %s", missing)
+            logger.warning(
+                "Column(s) not found, skipping dependent feature(s): %s",
+                missing,
+            )
             return False
+
         return True
 
     # --------------------------------------------------
-    # City encoding (one-hot — only 3 cities, so this stays compact;
-    # ordinal/target encoding would be needed if this scales to
-    # dozens of cities later)
+    # City encoding
     # --------------------------------------------------
 
-    def add_city_encoding(self, df: pd.DataFrame) -> pd.DataFrame:
-        if not self._has_columns(df, self.city_col):
+    def add_city_encoding(
+        self,
+        df: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """
+        One-hot encode the project's fixed supported city set.
+
+        The same three columns are ALWAYS generated:
+
+            city_Islamabad
+            city_Karachi
+            city_Lahore
+
+        This prevents train/validation/test/inference schema drift.
+        """
+
+        if not self._has_columns(
+            df,
+            self.city_col,
+        ):
             return df
-        df = df.copy()
-        dummies = pd.get_dummies(df[self.city_col], prefix="city", dtype=int)
-        df = pd.concat([df, dummies], axis=1)
-        logger.info("City one-hot encoded: %s", list(dummies.columns))
-        return df
+
+        result = df.copy()
+
+        normalized_city = (
+            result[self.city_col]
+            .astype(str)
+            .str.strip()
+            .str.title()
+        )
+
+        unsupported = sorted(
+            set(normalized_city.dropna().unique())
+            - set(SUPPORTED_CITIES)
+        )
+
+        if unsupported:
+            logger.warning(
+                "Unsupported city value(s) encountered during spatial "
+                "encoding: %s",
+                unsupported,
+            )
+
+        city_series = pd.Series(
+            pd.Categorical(
+                normalized_city,
+                categories=list(SUPPORTED_CITIES),
+            ),
+            index=result.index,
+            name=self.city_col,
+        )
+
+        dummies = pd.get_dummies(
+            city_series,
+            prefix="city",
+            dtype=int,
+        )
+
+        expected_dummy_columns = [
+            f"city_{city}"
+            for city in SUPPORTED_CITIES
+        ]
+
+        dummies = dummies.reindex(
+            columns=expected_dummy_columns,
+            fill_value=0,
+        )
+
+        result = pd.concat(
+            [
+                result,
+                dummies,
+            ],
+            axis=1,
+        )
+
+        logger.info(
+            "City one-hot encoded with fixed schema: %s",
+            expected_dummy_columns,
+        )
+
+        return result
 
     # --------------------------------------------------
     # Station encoding
     # --------------------------------------------------
 
-    def add_station_encoding(self, df: pd.DataFrame) -> pd.DataFrame:
+    def add_station_encoding(
+        self,
+        df: pd.DataFrame,
+    ) -> pd.DataFrame:
         """
-        One-hot encodes `station_id`. NOTE: historical (Open-Meteo)
-        rows all carry the sentinel station_id=-1 (no physical
-        station in a reanalysis model — see historical_client.py),
-        so this column mixes real AQICN station IDs with that
-        sentinel. Check `dataset_statistics.json` / VIF results in
-        Phase 4 before trusting this feature — if -1 dominates the
-        distribution, it may carry more "is this historical or live
-        data" signal than genuine spatial signal, which would be a
-        subtle source-leakage risk worth dropping in Part 8.
+        Optional/manual station_id one-hot encoding.
+
+        IMPORTANT:
+        This method is intentionally NOT called by build().
+
+        It remains only for backwards compatibility or experiments.
         """
-        if not self._has_columns(df, self.station_col):
+
+        if not self._has_columns(
+            df,
+            self.station_col,
+        ):
             return df
-        df = df.copy()
-        dummies = pd.get_dummies(df[self.station_col], prefix="station", dtype=int)
-        df = pd.concat([df, dummies], axis=1)
-        return df
+
+        result = df.copy()
+
+        dummies = pd.get_dummies(
+            result[self.station_col],
+            prefix="station",
+            dtype=int,
+        )
+
+        result = pd.concat(
+            [
+                result,
+                dummies,
+            ],
+            axis=1,
+        )
+
+        logger.info(
+            "Station IDs manually one-hot encoded: %s",
+            list(dummies.columns),
+        )
+
+        return result
 
     # --------------------------------------------------
-    # Lat/Lon encoding
+    # Latitude / longitude features
     # --------------------------------------------------
 
-    def add_lat_lon_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def add_lat_lon_features(
+        self,
+        df: pd.DataFrame,
+    ) -> pd.DataFrame:
         """
-        Raw lat/lon are kept as-is (they're already small, bounded
-        numbers — no cyclical encoding needed since Pakistan doesn't
-        span the antimeridian/poles where lat/lon wrap around). Also
-        adds a single combined "coordinate hash" proxy via lat*lon,
-        which — combined with the one-hot city columns — gives
-        tree-based models an easy numeric handle on location without
-        relying solely on one-hot splits.
+        Keep latitude/longitude and add a simple geographic interaction.
         """
-        if not self._has_columns(df, self.latitude_col, self.longitude_col):
+
+        if not self._has_columns(
+            df,
+            self.latitude_col,
+            self.longitude_col,
+        ):
             return df
-        df = df.copy()
-        df["lat_lon_product"] = df[self.latitude_col] * df[self.longitude_col]
-        return df
+
+        result = df.copy()
+
+        result[self.latitude_col] = pd.to_numeric(
+            result[self.latitude_col],
+            errors="coerce",
+        )
+
+        result[self.longitude_col] = pd.to_numeric(
+            result[self.longitude_col],
+            errors="coerce",
+        )
+
+        result["lat_lon_product"] = (
+            result[self.latitude_col]
+            * result[self.longitude_col]
+        )
+
+        return result
 
     # --------------------------------------------------
-    # Distance features (optional — distance between the 3 known cities)
+    # Distance features
     # --------------------------------------------------
 
     @staticmethod
-    def _haversine_km(lat1, lon1, lat2, lon2) -> float:
-        """Great-circle distance between two lat/lon points, in km."""
-        r = 6371.0  # Earth's radius in km
-        lat1, lon1, lat2, lon2 = map(np.radians, (lat1, lon1, lat2, lon2))
-        dlat = lat2 - lat1
-        dlon = lon2 - lon1
-        a = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
-        return r * 2 * np.arcsin(np.sqrt(a))
+    def _haversine_km(
+        lat1,
+        lon1,
+        lat2,
+        lon2,
+    ):
+        """
+        Calculate great-circle distance in kilometres.
+        """
+
+        earth_radius_km = 6371.0
+
+        lat1, lon1, lat2, lon2 = map(
+            np.radians,
+            (
+                lat1,
+                lon1,
+                lat2,
+                lon2,
+            ),
+        )
+
+        delta_latitude = lat2 - lat1
+        delta_longitude = lon2 - lon1
+
+        a = (
+            np.sin(delta_latitude / 2) ** 2
+            + np.cos(lat1)
+            * np.cos(lat2)
+            * np.sin(delta_longitude / 2) ** 2
+        )
+
+        return (
+            earth_radius_km
+            * 2
+            * np.arcsin(np.sqrt(a))
+        )
 
     def add_distance_features(
         self,
@@ -142,40 +295,73 @@ class SpatialFeatureEngineer:
         reference_name: str = "reference",
     ) -> pd.DataFrame:
         """
-        Optional (per the Phase 3 plan). Adds distance-in-km from
-        each row's lat/lon to a given `reference_point` (lat, lon) —
-        e.g. distance to a known industrial zone or the national
-        capital. Not called by build() automatically since there is
-        no default reference point defined for this project yet;
-        call it explicitly if/when one is decided.
+        Add distance to an optional reference coordinate.
+
+        This is not part of the default production feature pipeline.
         """
+
         if reference_point is None:
-            logger.info("No reference_point given; skipping distance features.")
-            return df
-        if not self._has_columns(df, self.latitude_col, self.longitude_col):
+            logger.info(
+                "No reference_point given; skipping distance features."
+            )
             return df
 
-        df = df.copy()
-        ref_lat, ref_lon = reference_point
-        df[f"distance_to_{reference_name}_km"] = self._haversine_km(
-            df[self.latitude_col], df[self.longitude_col], ref_lat, ref_lon,
+        if not self._has_columns(
+            df,
+            self.latitude_col,
+            self.longitude_col,
+        ):
+            return df
+
+        result = df.copy()
+
+        reference_latitude, reference_longitude = reference_point
+
+        result[f"distance_to_{reference_name}_km"] = (
+            self._haversine_km(
+                result[self.latitude_col],
+                result[self.longitude_col],
+                reference_latitude,
+                reference_longitude,
+            )
         )
-        return df
+
+        return result
 
     # --------------------------------------------------
-    # Full Part 7 pipeline (distance features excluded — opt-in only)
+    # Full spatial pipeline
     # --------------------------------------------------
 
-    def build(self, df: pd.DataFrame) -> pd.DataFrame:
-        before_cols = df.shape[1]
+    def build(
+        self,
+        df: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """
+        Run production spatial feature engineering.
 
+        station_id is deliberately excluded.
+        """
+
+        before_columns = df.shape[1]
+
+        # Stable fixed-schema city features.
         df = self.add_city_encoding(df)
-        df = self.add_station_encoding(df)
+
+        # DO NOT:
+        #
+        # df = self.add_station_encoding(df)
+        #
+        # station_id remains metadata only.
+
         df = self.add_lat_lon_features(df)
 
-        after_cols = df.shape[1]
+        after_columns = df.shape[1]
+
         logger.info(
             "Spatial features added: %d new column(s) (%d -> %d).",
-            after_cols - before_cols, before_cols, after_cols,
+            after_columns - before_columns,
+            before_columns,
+            after_columns,
         )
+
         return df

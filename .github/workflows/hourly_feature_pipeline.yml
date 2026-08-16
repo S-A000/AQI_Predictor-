@@ -59,9 +59,9 @@ jobs:
 
       - name: Install dependencies
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install google-cloud-bigquery google-cloud-bigquery-storage "pandas-gbq>=0.26.1" db-dtypes pyarrow
+          python -m pip install -r requirements.txt
 
       - name: Validate required secrets
         shell: bash
@@ -93,9 +93,20 @@ jobs:
           PY
 
       - name: Run hourly feature pipeline
+        shell: bash
         run: |
+          set -euo pipefail
           python -c "import src.feature_engineering.pipeline_steps; print('Import working')"
-          python -m src.feature_pipeline.run_pipeline 
+          python -m src.feature_pipeline.run_pipeline 2>&1 | tee hourly-feature-pipeline.log
+
+      - name: Upload hourly pipeline log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hourly-feature-pipeline-log-${{ github.run_number }}
+          path: hourly-feature-pipeline.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Send failure email
         if: failure()

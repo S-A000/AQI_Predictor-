@@ -1,10 +1,3 @@
-"""Premium AQI dashboard presentation components.
-
-This module intentionally contains presentation only. It does not import the
-FastAPI application or prediction code; the Streamlit entrypoint supplies the
-already-fetched dashboard payload.
-"""
-
 from __future__ import annotations
 
 import base64
@@ -37,14 +30,51 @@ def _text(value: Any, fallback: str = "—") -> str:
 
 
 def _number(value: Any, fallback: float = 0.0) -> float:
+    """Numeric helper for calculations only."""
     try:
         return float(value) if value is not None else fallback
     except (TypeError, ValueError):
         return fallback
 
 
+def _optional_number(value: Any) -> float | None:
+    """Return a real numeric value or None; never fake zero for display."""
+    if value is None:
+        return None
+
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _whole(value: Any, fallback: int = 0) -> int:
     return round(_number(value, fallback))
+
+
+def _display_number(
+    value: Any,
+    *,
+    decimals: int = 1,
+    fallback: str = "—",
+) -> str:
+    numeric = _optional_number(value)
+
+    if numeric is None:
+        return fallback
+
+    if decimals == 0:
+        return str(round(numeric))
+
+    return f"{numeric:.{decimals}f}"
+
+
+def _display_whole(
+    value: Any,
+    fallback: str = "—",
+) -> str:
+    numeric = _optional_number(value)
+    return fallback if numeric is None else str(round(numeric))
 
 
 def _fmt_time(value: Any) -> str:
@@ -58,8 +88,23 @@ def _fmt_time(value: Any) -> str:
         return raw[:28]
 
 
-def category_color(category: Any, aqi: Any = 0) -> str:
+def category_color(
+    category: Any,
+    aqi: Any = None,
+) -> str:
     label = str(category or "").lower()
+
+    if (
+        not label
+        or label in {
+            "unknown",
+            "unavailable",
+            "awaiting reading",
+            "no category",
+        }
+    ):
+        return "#9aa5a3"
+
     if "good" in label:
         return "#70b68f"
     if "moderate" in label:
@@ -70,16 +115,22 @@ def category_color(category: Any, aqi: Any = 0) -> str:
         return "#d86d62"
     if "very" in label:
         return "#ae6b91"
-    if _number(aqi) > 300:
+
+    numeric_aqi = _optional_number(aqi)
+
+    if numeric_aqi is None:
+        return "#9aa5a3"
+    if numeric_aqi > 300:
         return "#744d68"
-    if _number(aqi) > 200:
+    if numeric_aqi > 200:
         return "#ae6b91"
-    if _number(aqi) > 150:
+    if numeric_aqi > 150:
         return "#d86d62"
-    if _number(aqi) > 100:
+    if numeric_aqi > 100:
         return "#e28b55"
-    if _number(aqi) > 50:
+    if numeric_aqi > 50:
         return "#e6bd65"
+
     return "#70b68f"
 
 
@@ -153,25 +204,137 @@ def render_aqi_scale() -> str:
     return f'<div class="scale" aria-label="AQI scale">{segments}</div>'
 
 
-def render_hero(city: Mapping[str, Any], asset_dir: Path) -> None:
-    name = _text(city.get("city"), "Karachi")
+def render_hero(
+    city: Mapping[str, Any],
+    asset_dir: Path,
+) -> None:
+    """
+    Render the hero card as raw HTML.
+
+    IMPORTANT:
+    Keep the HTML left-aligned in the Python string. Streamlit/Markdown
+    interprets lines with leading indentation as a code block, which would
+    display the HTML source instead of rendering it.
+    """
+
+    name = _text(
+        city.get("city"),
+        "Karachi",
+    )
+
     current = city.get("current") or {}
-    aqi = _whole(current.get("aqi"))
-    category = _text(current.get("category"), "Awaiting reading")
-    color = category_color(category, aqi)
-    meta = CITY_META.get(name, CITY_META["Karachi"])
+
+    raw_aqi = current.get("aqi")
+    numeric_aqi = _optional_number(raw_aqi)
+    aqi_text = _display_whole(raw_aqi)
+
+    category = _text(
+        current.get("category"),
+        "Awaiting reading",
+    )
+
+    color = category_color(
+        category,
+        numeric_aqi,
+    )
+
+    meta = CITY_META.get(
+        name,
+        CITY_META["Karachi"],
+    )
+
     image_path = asset_dir / meta["landmark"]
+
     if image_path.exists():
         try:
-            encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
-            image_html = f'<img class="landmark" src="data:image/png;base64,{encoded}" alt="{escape(name)} landmark">'
+            encoded = base64.b64encode(
+                image_path.read_bytes()
+            ).decode("ascii")
+
+            image_html = (
+                f'<img class="landmark" '
+                f'src="data:image/png;base64,{encoded}" '
+                f'alt="{escape(name)} landmark">'
+            )
+
         except OSError:
-            image_html = '<div class="landmark-missing">Landmark image unavailable</div>'
+            image_html = (
+                '<div class="landmark-missing">'
+                'Landmark image unavailable'
+                '</div>'
+            )
     else:
-        image_html = '<div class="landmark-missing">Landmark image missing</div>'
-    # The image is emitted by render_hero_with_image so binary encoding stays out of this renderer.
+        image_html = (
+            '<div class="landmark-missing">'
+            'Landmark image missing'
+            '</div>'
+        )
+
+    temperature_text = _display_whole(
+        current.get("temperature")
+    )
+
+    humidity_text = _display_whole(
+        current.get("humidity")
+    )
+
+    wind_text = _display_number(
+        current.get("wind_speed"),
+        decimals=1,
+    )
+
+    trend_label = _text(
+        (city.get("trend") or {}).get("label"),
+        "Trend unavailable",
+    )
+
+    dominant_name = _text(
+        (city.get("dominant_pollutant") or {}).get("name"),
+        "—",
+    )
+
+    # Do NOT convert this back to an indented triple-quoted HTML block.
+    # Leading four-space indentation is Markdown syntax for a code block.
+    hero_html = (
+        f'<section class="hero">'
+        f'{render_aqi_scale()}'
+        f'<div class="hero-content">'
+        f'<div>'
+        f'<p class="eyebrow">Air quality index · {escape(meta["code"])}</p>'
+        f'<h1 class="city-name">{escape(name)}</h1>'
+        f'<p class="city-code">{escape(_fmt_time(city.get("last_updated")))}</p>'
+        f'</div>'
+        f'<div class="weather">'
+        f'<div class="temp">{escape(temperature_text)}°</div>'
+        f'<div class="weather-copy">'
+        f'Local conditions<br>'
+        f'Humidity {escape(humidity_text)}% · Wind {escape(wind_text)} m/s'
+        f'</div>'
+        f'</div>'
+        f'<div class="category-side">'
+        f'<div class="category-label">Current air quality</div>'
+        f'<div class="category" style="color:{color}">{escape(category)}</div>'
+        f'</div>'
+        f'</div>'
+        f'<div class="cloud one"></div>'
+        f'<div class="cloud two"></div>'
+        f'<div class="cloud three"></div>'
+        f'<div class="landmark-wrap">{image_html}</div>'
+        f'<div class="hero-bottom">'
+        f'<div>'
+        f'<div class="hero-stat-label">Now / {escape(trend_label)}</div>'
+        f'<div class="hero-stat">{escape(aqi_text)} <small>AQI</small></div>'
+        f'</div>'
+        f'<div>'
+        f'<div class="hero-stat-label">Dominant pollutant</div>'
+        f'<div class="hero-stat">{escape(dominant_name)}</div>'
+        f'</div>'
+        f'</div>'
+        f'</section>'
+    )
+
     st.markdown(
-        f'''<section class="hero">{render_aqi_scale()}<div class="hero-content"><div><p class="eyebrow">Air quality index · {escape(meta["code"])}</p><h1 class="city-name">{escape(name)}</h1><p class="city-code">{escape(_fmt_time(city.get("last_updated")))}</p></div><div class="weather"><div class="temp">{_whole(current.get("temperature"))}°</div><div class="weather-copy">Local conditions<br>Humidity {_whole(current.get("humidity"))}% · Wind {_number(current.get("wind_speed")):.1f} m/s</div></div><div class="category-side"><div class="category-label">Current air quality</div><div class="category" style="color:{color}">{escape(category)}</div></div></div><div class="cloud one"></div><div class="cloud two"></div><div class="cloud three"></div><div class="landmark-wrap">{image_html}</div><div class="hero-bottom"><div><div class="hero-stat-label">Now / {escape(_text(city.get("trend", {}).get("label"), "steady trend"))}</div><div class="hero-stat">{aqi} <small>AQI</small></div></div><div><div class="hero-stat-label">Dominant pollutant</div><div class="hero-stat">{escape(_text((city.get("dominant_pollutant") or {}).get("name"), "—"))}</div></div></div></section>''',
+        hero_html,
         unsafe_allow_html=True,
     )
 
@@ -181,29 +344,160 @@ def render_hero_with_image(city: Mapping[str, Any], asset_dir: Path) -> None:
     render_hero(city, asset_dir)
 
 
-def render_forecasts(city: Mapping[str, Any]) -> None:
+def render_forecasts(
+    city: Mapping[str, Any],
+) -> None:
     forecast = city.get("forecast") or {}
     categories = city.get("forecast_categories") or {}
-    confidence = city.get("forecast_confidence") or {}
+
+    # Kept under the existing API key for backwards compatibility.
+    evaluation = city.get("forecast_confidence") or {}
+
     cards = []
-    for key, title in (("24h", "Next 24 hours"), ("48h", "Next 48 hours"), ("72h", "Next 72 hours")):
-        value = _whole(forecast.get(key))
-        cat = _text(categories.get(key), "No category")
-        details = confidence.get(key) or {}
-        rmse = details.get("rmse")
-        rmse_text = f"RMSE { _number(rmse):.1f}" if rmse is not None else "RMSE n/a"
-        cards.append(f'<div class="forecast-card"><div class="forecast-time">{title}</div><div class="forecast-number">{value}</div><div class="forecast-category" style="color:{category_color(cat,value)}">{escape(cat)}</div><div class="forecast-detail">Confidence · {escape(_text(details.get("label"), "n/a"))}<br>{rmse_text}</div></div>')
-    st.markdown('<div class="section-head"><div><div class="section-kicker">Projection window</div><h2 class="section-title">3-day forecast</h2></div></div><div class="forecast-grid">' + "".join(cards) + "</div>", unsafe_allow_html=True)
+
+    for key, title in (
+        ("24h", "Next 24 hours"),
+        ("48h", "Next 48 hours"),
+        ("72h", "Next 72 hours"),
+    ):
+        raw_value = forecast.get(key)
+        numeric_value = _optional_number(raw_value)
+        value_text = _display_whole(raw_value)
+
+        category = _text(
+            categories.get(key),
+            "Unavailable" if numeric_value is None else "No category",
+        )
+
+        details = evaluation.get(key) or {}
+
+        rmse = _optional_number(
+            details.get("rmse")
+        )
+
+        rmse_text = (
+            f"RMSE {rmse:.1f}"
+            if rmse is not None
+            else "RMSE —"
+        )
+
+        evaluation_label = _text(
+            details.get("label"),
+            "Evaluation unavailable",
+        )
+
+        cards.append(
+            f'<div class="forecast-card">'
+            f'<div class="forecast-time">{escape(title)}</div>'
+            f'<div class="forecast-number">{escape(value_text)}</div>'
+            f'<div class="forecast-category" '
+            f'style="color:{category_color(category, numeric_value)}">'
+            f'{escape(category)}</div>'
+            f'<div class="forecast-detail">'
+            f'Model evaluation · {escape(evaluation_label)}'
+            f'<br>{escape(rmse_text)}'
+            f'</div>'
+            f'</div>'
+        )
+
+    st.markdown(
+        '<div class="section-head">'
+        '<div>'
+        '<div class="section-kicker">Projection window</div>'
+        '<h2 class="section-title">3-day forecast</h2>'
+        '</div>'
+        '</div>'
+        '<div class="forecast-grid">'
+        + "".join(cards)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
 
 
-def render_overview(city: Mapping[str, Any]) -> None:
+def render_overview(
+    city: Mapping[str, Any],
+) -> None:
     current = city.get("current") or {}
-    aqi = _whole(current.get("aqi"))
-    category = _text(current.get("category"), "Unknown")
+
+    raw_aqi = current.get("aqi")
+    numeric_aqi = _optional_number(raw_aqi)
+    aqi_text = _display_whole(raw_aqi)
+
+    category = _text(
+        current.get("category"),
+        "Unavailable",
+    )
+
     trend = city.get("trend") or {}
-    direction = str(trend.get("direction") or "steady").lower()
-    pollutant = city.get("dominant_pollutant") or {}
-    st.markdown(f'<div class="aqi-overview"><div class="current-reading"><div class="section-kicker">Current AQI</div><div class="reading-number">{aqi}</div><div class="reading-meta"><span class="badge" style="background:{category_color(category,aqi)}">{escape(category)}</span><span class="trend {"up" if direction == "up" else "down"}">{escape(_text(trend.get("label"), "Trend unavailable"))}</span></div></div><div class="panel"><h3 class="panel-title">Signal summary</h3><div class="dominant"><div class="metric-icon">{escape(_text(pollutant.get("name"), "AQI")[:5])}</div><div><strong>{escape(_text(pollutant.get("name"), "Dominant pollutant unavailable"))} · {_number(pollutant.get("value")):.1f}</strong><span>{escape(_text(pollutant.get("reason"), "No dominant-pollutant explanation was returned."))}</span></div></div><div style="margin-top:1rem;color:#8b9691;font-size:.7rem;line-height:1.6">{escape(_text(current.get("message"), "Your latest AQI reading is ready."))}</div></div></div>', unsafe_allow_html=True)
+    direction = str(
+        trend.get("direction")
+        or "unknown"
+    ).lower()
+
+    trend_class = (
+        "up"
+        if direction == "up"
+        else "down" if direction == "down"
+        else ""
+    )
+
+    pollutant = (
+        city.get("dominant_pollutant")
+        or {}
+    )
+
+    pollutant_name = _text(
+        pollutant.get("name"),
+        "Dominant pollutant unavailable",
+    )
+
+    pollutant_value = _optional_number(
+        pollutant.get("value")
+    )
+
+    pollutant_value_text = (
+        f" · {pollutant_value:.1f}"
+        if pollutant_value is not None
+        else ""
+    )
+
+    st.markdown(
+        f'<div class="aqi-overview">'
+        f'<div class="current-reading">'
+        f'<div class="section-kicker">Current AQI</div>'
+        f'<div class="reading-number">{escape(aqi_text)}</div>'
+        f'<div class="reading-meta">'
+        f'<span class="badge" '
+        f'style="background:{category_color(category, numeric_aqi)}">'
+        f'{escape(category)}</span>'
+        f'<span class="trend {trend_class}">'
+        f'{escape(_text(trend.get("label"), "Trend unavailable"))}'
+        f'</span>'
+        f'</div>'
+        f'</div>'
+        f'<div class="panel">'
+        f'<h3 class="panel-title">Signal summary</h3>'
+        f'<div class="dominant">'
+        f'<div class="metric-icon">{escape(pollutant_name[:5])}</div>'
+        f'<div>'
+        f'<strong>'
+        f'{escape(pollutant_name)}'
+        f'{escape(pollutant_value_text)}'
+        f'</strong>'
+        f'<span>'
+        f'{escape(_text(pollutant.get("reason"), "No dominant-pollutant explanation was returned."))}'
+        f'</span>'
+        f'</div>'
+        f'</div>'
+        f'<div style="margin-top:1rem;color:#8b9691;'
+        f'font-size:.7rem;line-height:1.6">'
+        f'{escape(_text(current.get("message"), "Your latest AQI reading is ready."))}'
+        f'</div>'
+        f'</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
     render_forecasts(city)
 
 
@@ -218,41 +512,180 @@ def render_metrics(city: Mapping[str, Any]) -> None:
     st.markdown('<div class="section-head"><div><div class="section-kicker">Atmospheric signals</div><h2 class="section-title">Pollutant profile</h2></div></div><div class="metric-grid">' + "".join(html) + "</div>", unsafe_allow_html=True)
 
 
-def render_explainability(city: Mapping[str, Any]) -> None:
-    explanation = city.get("explainability") or {}
-    factors = explanation.get("top_factors") or []
-    with st.expander("Why this forecast?", expanded=bool(factors)):
-        st.caption(f"Method: {_text(explanation.get('method'), 'not available')} · {_text(explanation.get('note'), 'The API did not include a note.')}")
+def render_explainability(
+    city: Mapping[str, Any],
+) -> None:
+    explanation = (
+        city.get("explainability")
+        or {}
+    )
+
+    factors = (
+        explanation.get("top_factors")
+        or []
+    )
+
+    with st.expander(
+        "Why this forecast?",
+        expanded=bool(factors),
+    ):
+        st.caption(
+            "Method: "
+            f"{_text(explanation.get('method'), 'not available')} · "
+            f"{_text(explanation.get('note'), 'The API did not include a note.')}"
+        )
+
         if not factors:
-            st.info("No SHAP/LIME factors were returned for this reading.")
+            st.info(
+                "No explanation factors were returned for this reading."
+            )
             return
+
         rows = []
+
         for factor in factors:
-            rows.append(f'<div class="explain-row"><div><div class="explain-label">Feature</div><div class="explain-value">{escape(_text(factor.get("feature")))}</div></div><div><div class="explain-label">Impact</div><div class="explain-value">{escape(_text(factor.get("impact")))}</div></div><div><div class="explain-label">Contribution</div><div class="explain-value">{_number(factor.get("contribution")):.1f}</div></div><div><div class="explain-label">Direction</div><div class="explain-value direction">{escape(_text(factor.get("direction")))}</div></div><div><div class="explain-label">Reason</div><div class="explain-value">{escape(_text(factor.get("reason")))}</div></div></div>')
-        st.markdown("".join(rows), unsafe_allow_html=True)
+            contribution = _display_number(
+                factor.get("contribution"),
+                decimals=2,
+            )
+
+            rows.append(
+                f'<div class="explain-row">'
+                f'<div>'
+                f'<div class="explain-label">Feature</div>'
+                f'<div class="explain-value">'
+                f'{escape(_text(factor.get("feature")))}'
+                f'</div>'
+                f'</div>'
+                f'<div>'
+                f'<div class="explain-label">Impact</div>'
+                f'<div class="explain-value">'
+                f'{escape(_text(factor.get("impact")))}'
+                f'</div>'
+                f'</div>'
+                f'<div>'
+                f'<div class="explain-label">Contribution</div>'
+                f'<div class="explain-value">'
+                f'{escape(contribution)}'
+                f'</div>'
+                f'</div>'
+                f'<div>'
+                f'<div class="explain-label">Direction</div>'
+                f'<div class="explain-value direction">'
+                f'{escape(_text(factor.get("direction")))}'
+                f'</div>'
+                f'</div>'
+                f'<div>'
+                f'<div class="explain-label">Reason</div>'
+                f'<div class="explain-value">'
+                f'{escape(_text(factor.get("reason")))}'
+                f'</div>'
+                f'</div>'
+                f'</div>'
+            )
+
+        st.markdown(
+            "".join(rows),
+            unsafe_allow_html=True,
+        )
 
 
 def render_history(city: Mapping[str, Any]) -> None:
     history = city.get("history") or {}
-    st.markdown('<div class="section-head"><div><div class="section-kicker">Observed movement</div><h2 class="section-title">AQI history</h2></div></div>', unsafe_allow_html=True)
+
+    city_name = str(
+        city.get("city")
+        or city.get("name")
+        or "unknown"
+    ).lower().replace(" ", "_")
+
+    st.markdown(
+        """
+        <div class="section-head">
+            <div>
+                <div class="section-kicker">Observed movement</div>
+                <h2 class="section-title">AQI history</h2>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     tabs = st.tabs(["Last 24h", "Last 7d", "Last 30d"])
-    for tab, key in zip(tabs, ("last_24h", "last_7d", "last_30d")):
+
+    history_windows = (
+        "last_24h",
+        "last_7d",
+        "last_30d",
+    )
+
+    for tab, history_key in zip(tabs, history_windows):
         with tab:
-            points = history.get(key) or []
-            clean = [{"timestamp": p.get("timestamp"), "AQI": _number(p.get("aqi"))} for p in points if isinstance(p, Mapping) and p.get("aqi") is not None]
+            points = history.get(history_key) or []
+
+            clean = [
+                {
+                    "timestamp": point.get("timestamp"),
+                    "AQI": _number(point.get("aqi")),
+                }
+                for point in points
+                if isinstance(point, Mapping)
+                and point.get("aqi") is not None
+            ]
+
             if not clean:
-                st.info("No historical readings are available for this window.")
+                st.info(
+                    "No historical readings are available "
+                    "for this window."
+                )
                 continue
+
             try:
                 import pandas as pd
                 import plotly.express as px
+
                 frame = pd.DataFrame(clean)
-                fig = px.area(frame, x="timestamp", y="AQI", markers=True)
-                fig.update_traces(line_color="#5d8f82", fillcolor="rgba(93,143,130,.16)", marker_color="#17282e")
-                fig.update_layout(height=260, margin=dict(l=0,r=0,t=10,b=0), paper_bgcolor="#fffefa", plot_bgcolor="#fffefa", font=dict(family="DM Mono",size=10,color="#89938f"), xaxis_title=None, yaxis_title=None, hovermode="x unified")
-                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar":False})
+
+                fig = px.area(
+                    frame,
+                    x="timestamp",
+                    y="AQI",
+                    markers=True,
+                )
+
+                fig.update_traces(
+                    line_color="#5d8f82",
+                    fillcolor="rgba(93,143,130,.16)",
+                    marker_color="#17282e",
+                )
+
+                fig.update_layout(
+                    height=260,
+                    margin=dict(l=0, r=0, t=10, b=0),
+                    paper_bgcolor="#fffefa",
+                    plot_bgcolor="#fffefa",
+                    font=dict(
+                        family="DM Mono",
+                        size=10,
+                        color="#89938f",
+                    ),
+                    xaxis_title=None,
+                    yaxis_title=None,
+                    hovermode="x unified",
+                )
+
+                st.plotly_chart(
+                    fig,
+                    use_container_width=True,
+                    config={"displayModeBar": False},
+                    key=f"history_chart_{city_name}_{history_key}",
+                )
+
             except ImportError:
-                st.line_chart({"AQI": [point["AQI"] for point in clean]})
+                st.line_chart(
+                    {"AQI": [point["AQI"] for point in clean]},
+                    key=f"history_fallback_{city_name}_{history_key}",
+                )
 
 
 def render_dashboard(city: Mapping[str, Any], asset_dir: Path) -> None:

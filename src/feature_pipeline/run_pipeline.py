@@ -48,6 +48,36 @@ SUPPORTED_CITIES = [
 # Your longest rolling window is 168 hours.
 CONTEXT_ROWS_PER_CITY = 168
 
+RAW_CONTEXT_COLUMNS = (
+    "city",
+    "timestamp",
+    "event_hour",
+    "country",
+    "created_at",
+    "source",
+    "station_id",
+    "latitude",
+    "longitude",
+    "aqi",
+    "temperature",
+    "feels_like",
+    "humidity",
+    "pressure",
+    "wind_speed",
+    "wind_deg",
+    "wind_degree",
+    "wind_direction",
+    "cloudiness",
+    "visibility",
+    "pm25",
+    "pm10",
+    "no2",
+    "so2",
+    "co",
+    "o3",
+    "dominant_pollutant",
+)
+
 
 class HourlyFeaturePipeline:
     """
@@ -108,6 +138,9 @@ class HourlyFeaturePipeline:
             row["timestamp"] = pd.Timestamp.now(
                 tz="UTC"
             )
+
+        row["event_hour"] = row["timestamp"].floor("h")
+        row["timestamp"] = row["event_hour"]
 
         return row
 
@@ -182,6 +215,12 @@ class HourlyFeaturePipeline:
 
         full_df = full_df.dropna(
             subset=["city", "timestamp"]
+        )
+
+        full_df["timestamp"] = full_df["timestamp"].dt.floor("h")
+        full_df["event_hour"] = full_df["timestamp"]
+        full_df = full_df.drop_duplicates(
+            subset=["city", "event_hour"], keep="last"
         )
 
         full_df = full_df.sort_values(
@@ -326,11 +365,14 @@ class HourlyFeaturePipeline:
             sort=False,
         )
 
+        combined_df = combined_df.dropna(subset=["city"])
         combined_df["city"] = (
             combined_df["city"]
             .astype(str)
             .str.strip()
+            .str.title()
         )
+        combined_df = combined_df[combined_df["city"].ne("")].copy()
 
         combined_df["timestamp"] = pd.to_datetime(
             combined_df["timestamp"],
@@ -342,8 +384,11 @@ class HourlyFeaturePipeline:
             subset=["city", "timestamp"]
         )
 
+        combined_df["event_hour"] = combined_df["timestamp"].dt.floor("h")
+        combined_df["timestamp"] = combined_df["event_hour"]
+
         combined_df = combined_df.drop_duplicates(
-            subset=["city", "timestamp"],
+            subset=["city", "event_hour"],
             keep="last",
         )
 
@@ -362,9 +407,17 @@ class HourlyFeaturePipeline:
         Run the canonical feature pipeline and keep only new live rows.
         """
 
+        # BigQuery context already contains engineered columns. Retain only
+        # canonical source fields before rebuilding the latest row so features
+        # are neither duplicated nor recursively engineered.
+        raw_columns = [
+            column for column in RAW_CONTEXT_COLUMNS if column in combined_df.columns
+        ]
+        raw_combined_df = combined_df[raw_columns].copy()
+
         engineered_df = (
             run_feature_engineering_steps(
-                combined_df.copy()
+                raw_combined_df
             )
         )
 
@@ -373,26 +426,34 @@ class HourlyFeaturePipeline:
                 "Feature engineering returned an empty DataFrame."
             )
 
-        live_keys = live_df[
-            ["city", "timestamp"]
-        ].copy()
+        live_keys = live_df[["city", "event_hour"]].copy()
 
-        live_keys["timestamp"] = pd.to_datetime(
-            live_keys["timestamp"],
+        live_keys["event_hour"] = pd.to_datetime(
+            live_keys["event_hour"],
             utc=True,
             errors="coerce",
-        )
+        ).dt.floor("h")
+
+        engineered_df["event_hour"] = pd.to_datetime(
+            engineered_df["timestamp"], utc=True, errors="coerce"
+        ).dt.floor("h")
 
         latest_rows = engineered_df.merge(
             live_keys,
-            on=["city", "timestamp"],
+            on=["city", "event_hour"],
             how="inner",
         )
 
         latest_rows = latest_rows.drop_duplicates(
-            subset=["city", "timestamp"],
+            subset=["city", "event_hour"],
             keep="last",
         )
+
+        # This feature depends on train-fitted normalization state. Store it
+        # as NULL in the hourly table; the persisted training transformer
+        # computes it consistently for train/validation/test/inference.
+        if "pollution_index" in latest_rows.columns:
+            latest_rows = latest_rows.drop(columns=["pollution_index"])
 
         if latest_rows.empty:
             raise ValueError(
@@ -424,6 +485,15 @@ class HourlyFeaturePipeline:
         )
 
         df = dataframe.copy()
+
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(
+                df["timestamp"], utc=True, errors="coerce"
+            ).dt.floor("h")
+        if "event_hour" in df.columns:
+            df["event_hour"] = pd.to_datetime(
+                df["event_hour"], utc=True, errors="coerce"
+            ).dt.floor("h")
 
         for field in table.schema:
             column = field.name
@@ -573,10 +643,11 @@ def main() -> int:
                 len(aligned_df.columns),
             )
 
+            time_column = (
+                "event_hour" if "event_hour" in aligned_df.columns else "timestamp"
+            )
             print(
-                aligned_df[
-                    ["city", "timestamp"]
-                ].to_string(index=False)
+                aligned_df[["city", time_column]].to_string(index=False)
             )
 
             return 0

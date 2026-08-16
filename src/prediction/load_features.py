@@ -1,45 +1,68 @@
 """
-Suggested path: src/prediction/load_features.py
+load_features.py
+================
 
-SINGLE RESPONSIBILITY: Fetch, filter, and load live/latest feature records
-for batch inference and forecasting pipelines.
+Load recent RAW observations for online AQI inference.
+
+This loader intentionally reads:
+
+    data/training/training_dataset.parquet
+
+and NOT:
+
+    features_train.parquet
+    features_val.parquet
+    features_test.parquet
+
+PredictionFeaturePipeline must receive raw observations so it can
+rebuild lag/rolling/temporal/domain features using the exact same
+feature-engineering pipeline used during training.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+
 import pandas as pd
 
 from src.utils.logger import get_logger
 
+
 logger = get_logger(__name__)
 
-# Mirrors build_features.py's own path resolution (PROJECT_ROOT via
-# __file__, not src.utils.constants.PROCESSED_DATA_DIR) so this always
-# points at the SAME data/training/ folder build_features.py reads
-# its raw input from and writes its scaled outputs to — regardless of
-# whatever PROCESSED_DATA_DIR happens to resolve to elsewhere.
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-TRAINING_DIR = PROJECT_ROOT / "data" / "training"
+
+TRAINING_DIR = (
+    PROJECT_ROOT
+    / "data"
+    / "training"
+)
 
 
 class FeatureLoader:
     """
-    Feature Loader engine responsible for preparing context/history
-    records for online (real-time) inference and forecasting.
+    Load chronological raw observation context for prediction.
 
-    IMPORTANT: this loads RAW, pre-feature-engineering observations
-    (build_features.py's own input — training_dataset.parquet), NOT
-    the scaled features_*.parquet outputs. PredictionFeaturePipeline
-    concatenates this context with a new raw payload and runs the
-    FULL feature engineering + scaling chain on the combination
-    (see feature_pipeline.py) — feeding it already-scaled data here
-    would double-scale/corrupt that computation, and scaled physical
-    values (e.g. negative humidity) also fail PredictionPayload's
-    validation if ever routed there directly.
+    When `per_city=True`, `num_rows` means rows PER CITY.
+
+    Example:
+
+        num_rows=168
+        per_city=True
+
+    with three supported cities can return up to:
+
+        168 * 3 = 504 rows
+
+    This is required because lag/rolling features are calculated
+    independently within each city.
     """
 
-    def __init__(self, data_dir: Path | str = TRAINING_DIR) -> None:
+    def __init__(
+        self,
+        data_dir: Path | str = TRAINING_DIR,
+    ) -> None:
         self.data_dir = Path(data_dir)
 
     def load_latest_features(
@@ -47,33 +70,210 @@ class FeatureLoader:
         filename: str = "training_dataset.parquet",
         num_rows: int | None = None,
         timestamp_col: str = "timestamp",
+        city_col: str = "city",
+        *,
+        per_city: bool = False,
     ) -> pd.DataFrame:
         """
-        Loads the most recent raw observation rows for use as
-        lag/rolling context in online feature engineering.
+        Load recent raw observations for online feature engineering.
+
+        Parameters
+        ----------
+        filename:
+            Raw observation parquet file.
+
+        num_rows:
+            Number of latest rows to retain.
+
+            If per_city=False:
+                number of rows globally.
+
+            If per_city=True:
+                number of rows for EACH city.
+
+        timestamp_col:
+            Timestamp column used for chronological ordering.
+
+        city_col:
+            City column used when per_city=True.
+
+        per_city:
+            Keep `num_rows` independently for every city.
         """
-        file_path = self.data_dir / filename
+
+        file_path = (
+            self.data_dir
+            / filename
+        )
+
         if not file_path.exists():
-            error_msg = f"Raw context feature file not found at: {file_path}"
-            logger.error(error_msg)
-            raise FileNotFoundError(error_msg)
-
-        logger.info("Loading latest raw context features from: %s", file_path)
-        df = pd.read_parquet(file_path)
-
-        if timestamp_col in df.columns:
-            df = df.sort_values(timestamp_col)
-        else:
-            logger.warning(
-                "'%s' column not found — cannot guarantee chronological order; "
-                "'latest' rows may not actually be the most recent.",
-                timestamp_col,
+            error_message = (
+                "Raw context feature file not found at: "
+                f"{file_path}"
             )
 
-        if num_rows and num_rows > 0:
-            # .tail(), not .head(): we want the MOST RECENT rows for
-            # lag/rolling context, not the oldest ones in the file.
-            df = df.tail(num_rows)
+            logger.error(
+                error_message
+            )
 
-        logger.info("Successfully loaded %d feature record(s).", len(df))
+            raise FileNotFoundError(
+                error_message
+            )
+
+        logger.info(
+            "Loading latest raw context features from: %s",
+            file_path,
+        )
+
+        df = pd.read_parquet(
+            file_path
+        )
+
+        if df.empty:
+            raise ValueError(
+                "Raw prediction context dataset is empty."
+            )
+
+        # --------------------------------------------------
+        # Timestamp validation
+        # --------------------------------------------------
+
+        if timestamp_col not in df.columns:
+            raise ValueError(
+                "Raw prediction context is missing required "
+                f"timestamp column: {timestamp_col}"
+            )
+
+        df = df.copy()
+
+        df[timestamp_col] = pd.to_datetime(
+            df[timestamp_col],
+            utc=True,
+            errors="coerce",
+        )
+
+        invalid_timestamps = int(
+            df[timestamp_col]
+            .isna()
+            .sum()
+        )
+
+        if invalid_timestamps:
+            logger.warning(
+                "Dropping %d context row(s) with invalid timestamps.",
+                invalid_timestamps,
+            )
+
+            df = df.dropna(
+                subset=[timestamp_col]
+            )
+
+        if df.empty:
+            raise ValueError(
+                "No valid timestamped context rows remain."
+            )
+
+        # Canonical hourly key.
+        df[timestamp_col] = (
+            df[timestamp_col]
+            .dt.floor("h")
+        )
+
+        # --------------------------------------------------
+        # City normalization
+        # --------------------------------------------------
+
+        if city_col in df.columns:
+            df = df.dropna(
+                subset=[city_col]
+            )
+
+            df[city_col] = (
+                df[city_col]
+                .astype(str)
+                .str.strip()
+                .str.title()
+            )
+
+            df = df[
+                df[city_col].ne("")
+            ].copy()
+
+            # Prevent duplicate city/hour observations from influencing
+            # rolling or lag feature calculations.
+            df = df.drop_duplicates(
+                subset=[
+                    city_col,
+                    timestamp_col,
+                ],
+                keep="last",
+            )
+
+        elif per_city:
+            raise ValueError(
+                "per_city=True requires city column "
+                f"'{city_col}' in prediction context."
+            )
+
+        # --------------------------------------------------
+        # Context selection
+        # --------------------------------------------------
+
+        if (
+            per_city
+            and num_rows is not None
+            and num_rows > 0
+        ):
+            df = (
+                df
+                .sort_values(
+                    [
+                        city_col,
+                        timestamp_col,
+                    ]
+                )
+                .groupby(
+                    city_col,
+                    group_keys=False,
+                )
+                .tail(num_rows)
+                .sort_values(
+                    timestamp_col
+                )
+                .reset_index(
+                    drop=True
+                )
+            )
+
+        else:
+            df = (
+                df
+                .sort_values(
+                    timestamp_col
+                )
+            )
+
+            if (
+                num_rows is not None
+                and num_rows > 0
+            ):
+                df = (
+                    df
+                    .tail(num_rows)
+                )
+
+            df = df.reset_index(
+                drop=True
+            )
+
+        logger.info(
+            "Successfully loaded %d raw context record(s)%s.",
+            len(df),
+            (
+                f" ({num_rows} maximum per city)"
+                if per_city and num_rows
+                else ""
+            ),
+        )
+
         return df

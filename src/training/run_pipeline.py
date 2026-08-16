@@ -5,7 +5,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict
 
-from sklearn.metrics import r2_score
+import joblib
+import pandas as pd
 
 # ------------------------------------------------------------------
 # Project path configuration
@@ -42,7 +43,7 @@ TARGET_HORIZONS = [24, 48, 72]
 
 def sync_training_data_from_bigquery() -> Path:
     """
-    Download the complete raw training dataset from BigQuery.
+    Download the complete engineered feature history from BigQuery.
 
     The dataset is saved to the local Parquet path expected by
     build_features_pipeline().
@@ -83,6 +84,30 @@ def sync_training_data_from_bigquery() -> Path:
             "BigQuery training dataset is missing required columns: "
             f"{sorted(missing_columns)}"
         )
+
+    training_df = training_df.dropna(subset=["city"])
+    training_df["city"] = (
+        training_df["city"].astype(str).str.strip().str.title()
+    )
+    training_df = training_df[training_df["city"].ne("")].copy()
+    timestamps = pd.to_datetime(
+        training_df["timestamp"], utc=True, errors="coerce"
+    )
+    if "event_hour" in training_df.columns:
+        event_hours = pd.to_datetime(
+            training_df["event_hour"], utc=True, errors="coerce"
+        )
+        timestamps = event_hours.fillna(timestamps)
+        training_df = training_df.drop(columns=["event_hour"])
+
+    training_df["timestamp"] = timestamps.dt.floor("h")
+    invalid_timestamp_count = int(training_df["timestamp"].isna().sum())
+    if invalid_timestamp_count:
+        logger.warning(
+            "Dropping %d BigQuery row(s) with invalid timestamps.",
+            invalid_timestamp_count,
+        )
+        training_df = training_df.dropna(subset=["timestamp"])
 
     before_deduplication = len(training_df)
 
@@ -137,8 +162,8 @@ def run_end_to_end_pipeline() -> Dict[int, Dict[str, Any]]:
     Execute the direct multi-horizon AQI forecasting MLOps pipeline.
 
     Workflow:
-        0. Download raw training data from BigQuery.
-        1. Build leakage-safe features and forecast targets.
+        0. Download engineered feature history from BigQuery.
+        1. Build exact forecast targets and fit leakage-safe preprocessing.
         2. Prepare train, validation and test datasets.
         3. Train candidate models for 24h, 48h and 72h horizons.
         4. Evaluate candidates and register the best model.
@@ -165,7 +190,7 @@ def run_end_to_end_pipeline() -> Dict[int, Dict[str, Any]]:
 
     try:
         # ----------------------------------------------------------
-        # STEP 0: Sync raw training dataset from BigQuery
+        # STEP 0: Sync engineered training features from BigQuery
         # ----------------------------------------------------------
 
         logger.info(
@@ -197,8 +222,8 @@ def run_end_to_end_pipeline() -> Dict[int, Dict[str, Any]]:
         # ----------------------------------------------------------
 
         logger.info(
-            "Step 1: Starting Feature Engineering "
-            "& Target Generation..."
+            "Step 1: Starting Target Generation "
+            "& Train-Fitted Preprocessing..."
         )
 
         feature_start = time.time()
@@ -209,6 +234,7 @@ def run_end_to_end_pipeline() -> Dict[int, Dict[str, Any]]:
         # - features_test.parquet
         build_features_pipeline(
             input_path=training_path,
+            already_engineered=False,
         )
 
         feature_duration = (
@@ -216,18 +242,25 @@ def run_end_to_end_pipeline() -> Dict[int, Dict[str, Any]]:
             - feature_start
         )
 
-        timings["Feature Engineering"] = (
+        timings["Preprocessing"] = (
             feature_duration
         )
 
         logger.info(
-            "-> Feature engineering completed in %.0f seconds.",
+            "-> Target generation and preprocessing completed in %.0f seconds.",
             feature_duration,
         )
 
         # ----------------------------------------------------------
         # STEP 2: Train a direct model for each horizon
         # ----------------------------------------------------------
+
+        preprocessor_path = training_path.parent / "scaler.joblib"
+        if not preprocessor_path.exists():
+            raise FileNotFoundError(
+                f"Fitted preprocessing artifact was not created: {preprocessor_path}"
+            )
+        fitted_preprocessor = joblib.load(preprocessor_path)
 
         for horizon in TARGET_HORIZONS:
             logger.info(
@@ -250,7 +283,10 @@ def run_end_to_end_pipeline() -> Dict[int, Dict[str, Any]]:
             )
 
             # Train candidates, log experiments and register winner.
-            trainer = MultiModelTrainer()
+            trainer = MultiModelTrainer(
+                preprocessor=fitted_preprocessor,
+                preprocessor_path=preprocessor_path,
+            )
 
             (
                 winner_name,
@@ -262,19 +298,16 @@ def run_end_to_end_pipeline() -> Dict[int, Dict[str, Any]]:
             )
 
             # Calculate R² for final reporting.
-            test_predictions = best_artifact.predict(
-                splits.X_test
-            )
-
-            winner_r2 = r2_score(
-                splits.y_test,
-                test_predictions,
-            )
+            test_metrics = trainer.selected_test_metrics_
+            if not test_metrics:
+                raise RuntimeError(
+                    f"Final test metrics were not recorded for {horizon}h."
+                )
 
             results[horizon] = {
                 "winner": winner_name,
                 "rmse": float(winner_rmse),
-                "r2": float(winner_r2),
+                "r2": float(test_metrics["r2"]),
             }
 
             horizon_duration = (

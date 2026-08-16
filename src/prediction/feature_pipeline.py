@@ -1,65 +1,132 @@
 """
-src/prediction/feature_pipeline.py
+feature_pipeline.py
+===================
 
-1. Why it was modified: Created to serve as the single source of truth for online feature engineering, enforcing strict training-serving parity. Enhanced with automatic encoding alignment and feature schema matching.
-2. Architecture before: Prediction skipped feature engineering and relied on pre-built parquet files.
-3. Architecture after: PredictionFeaturePipeline orchestrates all 8 feature engineering classes and handles dynamic categorical encoding/scaling alignment.
-4. Exact code: See below.
-5. Every changed function: __init__, _apply_engineers, _transform_scaler, build_features, build_batch_features.
-6. Every new class: `PredictionFeaturePipeline`.
-7. Why the change follows SOLID: Open/Closed Principle - the pipeline delegates to existing feature engineer classes without modifying them.
-8. Why it removes training-serving skew: By importing and executing the exact same classes in the exact same order as `build_features.py`, it guarantees identical transformations and feature order. UPDATED: the order itself is now imported from pipeline_steps.py (single source of truth), not hand-listed here — see that file's docstring.
-9. Why it is production-safe: Prevents data leakage by calling `transform()`, automatically aligns unseen/missing dummy columns, and unpacks dict artifacts safely. UPDATED: missing-feature fills are no longer silent — every gap is logged by name so a schema drift upstream is visible instead of masquerading as a "clean" 0.0 reading.
+Production prediction feature pipeline.
+
+Responsibilities:
+- Validate prediction payloads
+- Combine payloads with raw historical context
+- Run the exact canonical feature-engineering pipeline
+- Remove stale/precomputed legacy features before regeneration
+- Apply ONLY the persisted train-fitted preprocessing state
+- Preserve strict training-serving schema parity
+- Never silently fabricate missing model features
 """
 
+from __future__ import annotations
+
 from typing import Any, Dict, List, Optional, Union
+
+import numpy as np
 import pandas as pd
 
-# CHANGED: step order now comes from the single shared module instead of
-# being re-derived here. The individual engineer classes are still
-# imported because PredictionFeaturePipeline keeps long-lived instances
-# of them (passed into run_feature_engineering_steps via `engineers=`).
-from src.feature_engineering.temporal_features import TemporalFeatureEngineer
-from src.feature_engineering.lag_features import LagFeatureEngineer
-from src.feature_engineering.rolling_features import RollingFeatureEngineer
-from src.feature_engineering.trend_features import TrendFeatureEngineer
-from src.feature_engineering.interaction_features import InteractionFeatureEngineer
-from src.feature_engineering.air_quality_features import AirQualityFeatureEngineer
-from src.feature_engineering.spatial_features import SpatialFeatureEngineer
-from src.feature_engineering.pipeline_steps import run_feature_engineering_steps
-from src.prediction.validator import PredictionPayload, PredictionValidator
+from src.feature_engineering.air_quality_features import (
+    AirQualityFeatureEngineer,
+)
+from src.feature_engineering.interaction_features import (
+    InteractionFeatureEngineer,
+)
+from src.feature_engineering.lag_features import (
+    LagFeatureEngineer,
+)
+from src.feature_engineering.pipeline_steps import (
+    run_feature_engineering_steps,
+)
+from src.feature_engineering.rolling_features import (
+    RollingFeatureEngineer,
+)
+from src.feature_engineering.spatial_features import (
+    SpatialFeatureEngineer,
+)
+from src.feature_engineering.temporal_features import (
+    TemporalFeatureEngineer,
+)
+from src.feature_engineering.trend_features import (
+    TrendFeatureEngineer,
+)
+from src.prediction.validator import (
+    PredictionPayload,
+    PredictionValidator,
+)
 from src.utils.logger import get_logger
+
 
 logger = get_logger(__name__)
 
 
+# BigQuery/raw training history currently contains some lightweight
+# derived columns. Training removes these before canonical feature
+# engineering; inference must do the same to maintain parity.
+PRECOMPUTED_FEATURE_COLUMNS = (
+    "hour",
+    "day",
+    "month",
+    "day_of_week",
+    "is_weekend",
+    "aqi_change_rate",
+    "aqi_rolling_mean_3h",
+)
+
+
 class PredictionFeaturePipeline:
     """
-    PredictionFeaturePipeline owns ALL preprocessing.
-    It reuses existing feature engineering classes to ensure zero training-serving skew.
+    Build production model-ready features from raw observations.
+
+    The persisted ScalingEncodingEngineer from the selected model bundle
+    owns all fitted preprocessing state:
+
+    - imputation statistics
+    - pollution-index normalization
+    - categorical categories
+    - VIF drops
+    - scaler
+    - numeric schema
+
+    Prediction NEVER calls fit().
     """
 
-    def __init__(self, scaler_engineer: Any):
-        """
-        Initializes the pipeline with a FITTED ScalingEncodingEngineer or scaler artifact dict.
-        """
+    def __init__(
+        self,
+        scaler_engineer: Any,
+    ) -> None:
         self.scaler_engineer = scaler_engineer
-        self.validator = PredictionValidator()
 
-        self.temporal_engineer = TemporalFeatureEngineer()
-        self.lag_engineer = LagFeatureEngineer()
-        self.rolling_engineer = RollingFeatureEngineer()
-        self.trend_engineer = TrendFeatureEngineer()
-        self.interaction_engineer = InteractionFeatureEngineer()
-        self.air_quality_engineer = AirQualityFeatureEngineer()
-        self.spatial_engineer = SpatialFeatureEngineer()
+        self.validator = (
+            PredictionValidator()
+        )
 
-        # Maps step name -> long-lived instance, handed to
-        # run_feature_engineering_steps() so the ORDER is still
-        # controlled centrally by pipeline_steps.py while this class
-        # keeps its own instances (in case any engineer ever grows
-        # per-instance state — currently none do, but this keeps the
-        # option open without another refactor).
+        # Long-lived feature engineer instances.
+        self.temporal_engineer = (
+            TemporalFeatureEngineer()
+        )
+
+        self.lag_engineer = (
+            LagFeatureEngineer()
+        )
+
+        self.rolling_engineer = (
+            RollingFeatureEngineer()
+        )
+
+        self.trend_engineer = (
+            TrendFeatureEngineer()
+        )
+
+        self.interaction_engineer = (
+            InteractionFeatureEngineer()
+        )
+
+        self.air_quality_engineer = (
+            AirQualityFeatureEngineer()
+        )
+
+        self.spatial_engineer = (
+            SpatialFeatureEngineer()
+        )
+
+        # Feature order remains controlled centrally by
+        # pipeline_steps.py.
         self._engineers: Dict[str, Any] = {
             "temporal": self.temporal_engineer,
             "lag": self.lag_engineer,
@@ -70,133 +137,621 @@ class PredictionFeaturePipeline:
             "spatial": self.spatial_engineer,
         }
 
-        # NEW: visibility into the most recent transform-time schema gap,
-        # for callers (e.g. AQIPredictor) that want to inspect or report it.
         self.last_transform_missing_features_: List[str] = []
 
-    def _apply_engineers(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Applies feature engineers in the exact order used during training."""
-        return run_feature_engineering_steps(df, engineers=self._engineers)
+    # --------------------------------------------------
+    # Raw observation preparation
+    # --------------------------------------------------
 
-    def _transform_scaler(self, df: pd.DataFrame) -> pd.DataFrame:
+    @staticmethod
+    def _prepare_raw_observations(
+        df: pd.DataFrame,
+    ) -> pd.DataFrame:
         """
-        Industry-Grade Scaler & Encoding Handler:
-        1. Unpacks dict artifacts.
-        2. Clean pd.NA / NAType and fill NaNs to avoid sklearn array conversion crash.
-        3. Aligns feature schema with 'feature_names_in_' to guarantee zero column mismatches.
+        Canonicalize raw observation rows before feature engineering.
+        """
 
-        CHANGED: every branch that fills a missing expected column now logs
-        the exact column names it filled, instead of silently reindexing to
-        0.0. `self.last_transform_missing_features_` is set on every call
-        (empty list when nothing was missing) so a caller can check it
-        without parsing logs.
+        if df.empty:
+            raise ValueError(
+                "Cannot engineer an empty prediction DataFrame."
+            )
+
+        result = df.copy()
+
+        required = {
+            "city",
+            "timestamp",
+        }
+
+        missing = (
+            required
+            - set(result.columns)
+        )
+
+        if missing:
+            raise ValueError(
+                "Prediction feature input is missing required "
+                f"column(s): {sorted(missing)}"
+            )
+
+        result["timestamp"] = pd.to_datetime(
+            result["timestamp"],
+            utc=True,
+            errors="coerce",
+        )
+
+        result = result.dropna(
+            subset=[
+                "city",
+                "timestamp",
+            ]
+        )
+
+        result["timestamp"] = (
+            result["timestamp"]
+            .dt.floor("h")
+        )
+
+        result["city"] = (
+            result["city"]
+            .astype(str)
+            .str.strip()
+            .str.title()
+        )
+
+        result = result[
+            result["city"].ne("")
+        ].copy()
+
+        # Remove legacy/precomputed columns exactly as training does.
+        stale_columns = [
+            column
+            for column in PRECOMPUTED_FEATURE_COLUMNS
+            if column in result.columns
+        ]
+
+        if stale_columns:
+            logger.info(
+                "Removing precomputed context feature(s) before "
+                "canonical inference engineering: %s",
+                stale_columns,
+            )
+
+            result = result.drop(
+                columns=stale_columns
+            )
+
+        # Payload rows are appended after context, so keep="last"
+        # ensures a new observation replaces an older same city/hour row.
+        result = (
+            result
+            .drop_duplicates(
+                subset=[
+                    "city",
+                    "timestamp",
+                ],
+                keep="last",
+            )
+            .sort_values(
+                [
+                    "city",
+                    "timestamp",
+                ]
+            )
+            .reset_index(
+                drop=True
+            )
+        )
+
+        return result
+
+    # --------------------------------------------------
+    # Canonical feature engineering
+    # --------------------------------------------------
+
+    def _apply_engineers(
+        self,
+        df: pd.DataFrame,
+    ) -> pd.DataFrame:
         """
-        import numpy as np
+        Apply the same canonical feature-engineering order as training.
+        """
+
+        prepared_df = (
+            self._prepare_raw_observations(
+                df
+            )
+        )
+
+        return run_feature_engineering_steps(
+            prepared_df,
+            engineers=self._engineers,
+        )
+
+    # --------------------------------------------------
+    # Train-fitted preprocessing
+    # --------------------------------------------------
+
+    def _transform_scaler(
+        self,
+        df: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """
+        Apply persisted training preprocessing.
+
+        IMPORTANT:
+        Missing fitted features are NEVER silently created with zeroes.
+        Any preprocessing/schema problem fails immediately.
+        """
 
         obj = self.scaler_engineer
 
-        # 1. Unpack dictionary artifacts if loaded from joblib
-        if isinstance(obj, dict):
-            for key in ("scaler_engineer", "scaler", "model", "pipeline"):
+        # --------------------------------------------------
+        # Legacy dictionary artifact support
+        # --------------------------------------------------
+
+        if isinstance(
+            obj,
+            dict,
+        ):
+            extracted = None
+
+            for key in (
+                "scaler_engineer",
+                "pipeline",
+                "scaler",
+            ):
                 if key in obj:
-                    obj = obj[key]
+                    extracted = obj[key]
                     break
 
-        # 2. If it is a ScalingEncodingEngineer instance or custom wrapper.
-        # NOTE: ScalingEncodingEngineer.transform() itself now logs+tracks
-        # its own missing-feature fills (see scaling_encoding.py) — nothing
-        # extra needed here for that path, we just don't swallow it.
-        if hasattr(obj, "transform") and callable(obj.transform):
-            try:
-                result = obj.transform(df)
-                self.last_transform_missing_features_ = list(
-                    getattr(obj, "last_transform_missing_features_", [])
+            if extracted is None:
+                raise ValueError(
+                    "Scaler artifact dictionary does not contain a "
+                    "supported preprocessing object."
                 )
-                return result
-            except Exception:
-                pass
 
-        # 3. Direct Scikit-Learn Scaler with Schema Alignment (feature_names_in_)
-        if hasattr(obj, "feature_names_in_"):
-            expected_features = list(obj.feature_names_in_)
-            missing = [c for c in expected_features if c not in df.columns]
+            obj = extracted
+
+        # --------------------------------------------------
+        # Preferred bundled ScalingEncodingEngineer path
+        # --------------------------------------------------
+
+        if (
+            hasattr(obj, "transform")
+            and callable(obj.transform)
+            and hasattr(
+                obj,
+                "model_feature_columns_",
+            )
+        ):
+            # DO NOT catch and swallow exceptions here.
+            result = obj.transform(
+                df
+            )
+
+            self.last_transform_missing_features_ = list(
+                getattr(
+                    obj,
+                    "last_transform_missing_features_",
+                    [],
+                )
+            )
+
+            return result
+
+        # --------------------------------------------------
+        # Strict raw sklearn-transformer compatibility path
+        # --------------------------------------------------
+
+        if (
+            hasattr(obj, "feature_names_in_")
+            and hasattr(obj, "transform")
+        ):
+            expected_features = list(
+                obj.feature_names_in_
+            )
+
+            missing = [
+                column
+                for column in expected_features
+                if column not in df.columns
+            ]
+
+            self.last_transform_missing_features_ = (
+                missing
+            )
 
             if missing:
-                logger.warning(
-                    "PredictionFeaturePipeline: %d expected feature(s) missing "
-                    "before raw-scaler transform, filled with 0.0: %s",
-                    len(missing), missing,
+                raise ValueError(
+                    "Raw preprocessing artifact expected missing "
+                    f"feature(s): {missing}"
                 )
-            self.last_transform_missing_features_ = missing
 
-            # Auto-align One-Hot dummies & drop raw targets/unseen columns
-            aligned_df = df.reindex(columns=expected_features, fill_value=0.0)
+            aligned_df = (
+                df.loc[
+                    :,
+                    expected_features,
+                ]
+                .copy()
+            )
 
-            # 🧹 CRITICAL FIX: Convert pd.NA / NAType to standard np.nan, then fill NAs with 0.0
-            aligned_df = aligned_df.fillna(np.nan)
-            aligned_df = aligned_df.replace({pd.NA: np.nan, None: np.nan})
-            aligned_df = aligned_df.astype(float).fillna(0.0)
+            aligned_df = aligned_df.replace(
+                {
+                    pd.NA: np.nan,
+                    None: np.nan,
+                }
+            )
 
-            scaled_array = obj.transform(aligned_df)
-            return pd.DataFrame(scaled_array, columns=expected_features, index=df.index)
+            unresolved = [
+                column
+                for column in aligned_df.columns
+                if aligned_df[column].isna().any()
+            ]
 
-        # 4. Standard transform fallback with NA cleanup
-        if hasattr(obj, "transform"):
-            df_cleaned = df.fillna(np.nan).replace({pd.NA: np.nan}).fillna(0.0)
-            return obj.transform(df_cleaned)
+            if unresolved:
+                raise ValueError(
+                    "Raw preprocessing input contains unresolved "
+                    f"missing values: {unresolved}"
+                )
 
-        raise AttributeError(
-            f"Provided scaler_engineer of type {type(self.scaler_engineer)} "
-            f"does not expose a valid '.transform()' or 'feature_names_in_' attribute."
+            scaled_array = obj.transform(
+                aligned_df
+            )
+
+            return pd.DataFrame(
+                scaled_array,
+                columns=expected_features,
+                index=aligned_df.index,
+            )
+
+        raise TypeError(
+            "Provided preprocessing artifact does not expose a "
+            "supported fitted transform contract. "
+            f"type={type(obj)}"
         )
+
+    # --------------------------------------------------
+    # Target key helpers
+    # --------------------------------------------------
+
+    @staticmethod
+    def _canonical_payload_keys(
+        payload_df: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """
+        Return canonical city/hour keys for payload rows.
+        """
+
+        keys = payload_df[
+            [
+                "city",
+                "timestamp",
+            ]
+        ].copy()
+
+        keys["city"] = (
+            keys["city"]
+            .astype(str)
+            .str.strip()
+            .str.title()
+        )
+
+        keys["timestamp"] = (
+            pd.to_datetime(
+                keys["timestamp"],
+                utc=True,
+                errors="coerce",
+            )
+            .dt.floor("h")
+        )
+
+        if keys["timestamp"].isna().any():
+            raise ValueError(
+                "Prediction payload contains invalid timestamp value(s)."
+            )
+
+        return keys
+
+    @staticmethod
+    def _select_engineered_payload_rows(
+        engineered_df: pd.DataFrame,
+        payload_keys: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """
+        Select only engineered rows belonging to requested payload keys.
+
+        Matching uses BOTH city and timestamp.
+        """
+
+        engineered = (
+            engineered_df.copy()
+        )
+
+        engineered["city"] = (
+            engineered["city"]
+            .astype(str)
+            .str.strip()
+            .str.title()
+        )
+
+        engineered["timestamp"] = (
+            pd.to_datetime(
+                engineered["timestamp"],
+                utc=True,
+                errors="coerce",
+            )
+            .dt.floor("h")
+        )
+
+        key_frame = payload_keys.copy()
+
+        key_frame["_payload_order"] = range(
+            len(key_frame)
+        )
+
+        selected = engineered.merge(
+            key_frame,
+            on=[
+                "city",
+                "timestamp",
+            ],
+            how="inner",
+            validate="many_to_one",
+        )
+
+        if selected.empty:
+            raise ValueError(
+                "Canonical feature engineering produced no rows "
+                "matching the prediction payload."
+            )
+
+        selected = (
+            selected
+            .sort_values(
+                "_payload_order"
+            )
+            .drop_duplicates(
+                subset=[
+                    "city",
+                    "timestamp",
+                ],
+                keep="last",
+            )
+        )
+
+        if len(selected) != len(
+            key_frame.drop_duplicates(
+                subset=[
+                    "city",
+                    "timestamp",
+                ]
+            )
+        ):
+            raise ValueError(
+                "Prediction payload/features could not be aligned "
+                "one-to-one by city and timestamp."
+            )
+
+        selected = selected.drop(
+            columns=[
+                "_payload_order",
+            ]
+        )
+
+        return selected
+
+    # --------------------------------------------------
+    # Single prediction features
+    # --------------------------------------------------
 
     def build_features(
         self,
-        payload: Union[Dict[str, Any], PredictionPayload],
-        context_df: Optional[pd.DataFrame] = None
+        payload: Union[
+            Dict[str, Any],
+            PredictionPayload,
+        ],
+        context_df: Optional[pd.DataFrame] = None,
     ) -> pd.DataFrame:
         """
-        Builds features for a single payload.
-        Calls transform(), NEVER fit().
+        Build one model-ready prediction feature row.
+
+        transform() is used; fit() is never called.
         """
-        validated = self.validator.validate(payload)
-        payload_dict = self.validator.to_feature_dict(validated)
-        payload_df = pd.DataFrame([payload_dict])
-        target_timestamp = payload_df["timestamp"].iloc[0]
 
-        if context_df is not None and not context_df.empty:
-            combined_df = pd.concat([context_df, payload_df], ignore_index=True)
-            engineered_df = self._apply_engineers(combined_df)
-            mask = engineered_df["timestamp"] == target_timestamp
-            target_engineered = engineered_df[mask].tail(1).copy() if mask.any() else engineered_df.tail(1).copy()
+        validated = (
+            self.validator.validate(
+                payload
+            )
+        )
+
+        payload_dict = (
+            self.validator.to_feature_dict(
+                validated
+            )
+        )
+
+        payload_df = pd.DataFrame(
+            [
+                payload_dict,
+            ]
+        )
+
+        payload_keys = (
+            self._canonical_payload_keys(
+                payload_df
+            )
+        )
+
+        if (
+            context_df is not None
+            and not context_df.empty
+        ):
+            combined_df = pd.concat(
+                [
+                    context_df,
+                    payload_df,
+                ],
+                ignore_index=True,
+                sort=False,
+            )
+
         else:
-            target_engineered = self._apply_engineers(payload_df)
+            combined_df = (
+                payload_df
+            )
 
-        scaled_df = self._transform_scaler(target_engineered)
+        engineered_df = (
+            self._apply_engineers(
+                combined_df
+            )
+        )
+
+        target_engineered = (
+            self._select_engineered_payload_rows(
+                engineered_df,
+                payload_keys,
+            )
+        )
+
+        if len(target_engineered) != 1:
+            raise ValueError(
+                "Single prediction expected exactly one engineered row; "
+                f"received {len(target_engineered)}."
+            )
+
+        scaled_df = (
+            self._transform_scaler(
+                target_engineered
+            )
+        )
+
         return scaled_df
+
+    # --------------------------------------------------
+    # Batch prediction features
+    # --------------------------------------------------
 
     def build_batch_features(
         self,
-        payloads: List[Union[Dict[str, Any], PredictionPayload]],
-        context_df: Optional[pd.DataFrame] = None
+        payloads: List[
+            Union[
+                Dict[str, Any],
+                PredictionPayload,
+            ]
+        ],
+        context_df: Optional[pd.DataFrame] = None,
     ) -> pd.DataFrame:
         """
-        Builds features for a batch of payloads.
-        Calls transform(), NEVER fit().
+        Build model-ready features for multiple payloads.
+
+        Matching uses city + timestamp, preventing different cities
+        sharing the same timestamp from being mixed together.
         """
-        validated_batch = self.validator.validate_batch(payloads)
-        batch_dicts = [self.validator.to_feature_dict(p) for p in validated_batch]
-        payload_df = pd.DataFrame(batch_dicts)
 
-        target_timestamps = set(payload_df["timestamp"])
+        if not payloads:
+            raise ValueError(
+                "Prediction batch cannot be empty."
+            )
 
-        if context_df is not None and not context_df.empty:
-            combined_df = pd.concat([context_df, payload_df], ignore_index=True)
-            engineered_df = self._apply_engineers(combined_df)
-            mask = engineered_df["timestamp"].isin(target_timestamps)
-            batch_engineered = engineered_df[mask].copy() if mask.any() else engineered_df.tail(len(payload_df)).copy()
+        validated_batch = (
+            self.validator.validate_batch(
+                payloads
+            )
+        )
+
+        batch_dicts = [
+            self.validator.to_feature_dict(
+                payload
+            )
+            for payload in validated_batch
+        ]
+
+        payload_df = pd.DataFrame(
+            batch_dicts
+        )
+
+        payload_keys = (
+            self._canonical_payload_keys(
+                payload_df
+            )
+        )
+
+        duplicate_keys = (
+            payload_keys
+            .duplicated(
+                subset=[
+                    "city",
+                    "timestamp",
+                ],
+                keep=False,
+            )
+        )
+
+        if duplicate_keys.any():
+            duplicates = (
+                payload_keys.loc[
+                    duplicate_keys,
+                    [
+                        "city",
+                        "timestamp",
+                    ],
+                ]
+                .astype(str)
+                .to_dict(
+                    orient="records"
+                )
+            )
+
+            raise ValueError(
+                "Prediction batch contains duplicate city/timestamp "
+                f"keys: {duplicates}"
+            )
+
+        if (
+            context_df is not None
+            and not context_df.empty
+        ):
+            combined_df = pd.concat(
+                [
+                    context_df,
+                    payload_df,
+                ],
+                ignore_index=True,
+                sort=False,
+            )
+
         else:
-            batch_engineered = self._apply_engineers(payload_df)
+            combined_df = (
+                payload_df
+            )
 
-        scaled_batch_df = self._transform_scaler(batch_engineered)
+        engineered_df = (
+            self._apply_engineers(
+                combined_df
+            )
+        )
+
+        batch_engineered = (
+            self._select_engineered_payload_rows(
+                engineered_df,
+                payload_keys,
+            )
+        )
+
+        if len(batch_engineered) != len(
+            payload_df
+        ):
+            raise ValueError(
+                "Batch feature engineering row-count mismatch; "
+                f"expected={len(payload_df)}, "
+                f"received={len(batch_engineered)}"
+            )
+
+        scaled_batch_df = (
+            self._transform_scaler(
+                batch_engineered
+            )
+        )
+
         return scaled_batch_df

@@ -37,6 +37,7 @@ class QualityReport:
     missing_value_counts: dict[str, int]
     missing_value_pct: dict[str, float]
     timestamp_gaps: list[TimestampGap] = field(default_factory=list)
+    invalid_value_counts: dict[str, int] = field(default_factory=dict)
     issues: list[str] = field(default_factory=list)
 
     @property
@@ -59,6 +60,7 @@ class QualityReport:
                 }
                 for gap in self.timestamp_gaps
             ],
+            "invalid_value_counts": self.invalid_value_counts,
             "issues": self.issues,
             "is_clean": self.is_clean,
         }
@@ -70,11 +72,9 @@ class QualityChecker:
     a merged dataset (typically HistoricalDatasetBuilder's output),
     and can clean it afterwards.
 
-    `clean()` intentionally mirrors the SAME rules used by
-    FeatureMerger.handle_missing_values() / drop_duplicates() in the
-    live ingestion path, so the final training dataset is cleaned
-    the same way live-serving data is — no extra skew introduced at
-    the training-dataset-building stage.
+    `clean()` resolves duplicate keys and clear domain violations, while
+    deliberately leaving statistical imputation to train-fitted model
+    preprocessing after the chronological split.
     """
 
     def __init__(
@@ -117,7 +117,14 @@ class QualityChecker:
         gaps: list[TimestampGap] = []
 
         for city, group in df.groupby(city_col):
-            ts = pd.to_datetime(group[timestamp_col]).sort_values()
+            ts = (
+                pd.to_datetime(
+                    group[timestamp_col], utc=True, errors="coerce"
+                )
+                .dropna()
+                .drop_duplicates()
+                .sort_values()
+            )
             if len(ts) < 2:
                 continue
 
@@ -146,16 +153,61 @@ class QualityChecker:
 
         return gaps
 
+    @staticmethod
+    def _check_invalid_values(df: pd.DataFrame) -> dict[str, int]:
+        """Report only clear project-domain violations, not rare high events."""
+
+        invalid_counts: dict[str, int] = {}
+        if "timestamp" in df.columns:
+            invalid_timestamp_count = int(
+                pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+                .isna()
+                .sum()
+            )
+            if invalid_timestamp_count:
+                invalid_counts["timestamp"] = invalid_timestamp_count
+
+        for column in ("pm25", "pm10", "no2", "so2", "co", "o3"):
+            if column not in df.columns:
+                continue
+            numeric = pd.to_numeric(df[column], errors="coerce")
+            count = int((numeric < 0).sum())
+            if count:
+                invalid_counts[column] = count
+
+        if "aqi" in df.columns:
+            aqi = pd.to_numeric(df["aqi"], errors="coerce")
+            count = int(((aqi < 0) | (aqi > 500)).sum())
+            if count:
+                invalid_counts["aqi"] = count
+
+        return invalid_counts
+
     # --------------------------------------------------
     # Public API
     # --------------------------------------------------
 
     def check(self, df: pd.DataFrame) -> QualityReport:
-        duplicate_count = self._check_duplicates(df)
+        missing_key_columns = [
+            column for column in self.key_cols if column not in df.columns
+        ]
+        duplicate_count = (
+            self._check_duplicates(df) if not missing_key_columns else 0
+        )
         missing_counts, missing_pct = self._check_missing_values(df)
-        gaps = self._check_timestamp_continuity(df)
+        gaps = (
+            self._check_timestamp_continuity(df)
+            if {"city", "timestamp"}.issubset(df.columns)
+            else []
+        )
+        invalid_counts = self._check_invalid_values(df)
 
         issues: list[str] = []
+
+        if missing_key_columns:
+            issues.append(
+                f"Missing required schema column(s): {missing_key_columns}"
+            )
 
         if duplicate_count:
             issues.append(f"{duplicate_count} duplicate row(s) on {self.key_cols}")
@@ -174,12 +226,18 @@ class QualityChecker:
                 f"totaling {total_missing_hours} missing hour(s)"
             )
 
+        for column, count in invalid_counts.items():
+            issues.append(
+                f"Column '{column}' has {count} clearly invalid value(s)"
+            )
+
         report = QualityReport(
             row_count=len(df),
             duplicate_count=duplicate_count,
             missing_value_counts=missing_counts,
             missing_value_pct=missing_pct,
             timestamp_gaps=gaps,
+            invalid_value_counts=invalid_counts,
             issues=issues,
         )
 
@@ -192,9 +250,11 @@ class QualityChecker:
 
     def clean(self, df: pd.DataFrame, *, missing_value_strategy: str = "mean") -> pd.DataFrame:
         """
-        Deduplicates on key_cols (last occurrence wins) and fills/
-        drops missing numeric values per `missing_value_strategy`
-        ("mean" | "zero" | "drop"). Timestamp gaps are NOT filled
+        Deduplicates on key_cols (last occurrence wins) and normalizes
+        clearly invalid domain values. Missing-value handling is deferred
+        to train-fitted preprocessing. `missing_value_strategy` remains
+        accepted for backward-compatible callers.
+        Supported legacy values are "mean", "zero", and "drop". Timestamp gaps are NOT filled
         here — a missing hour of real-world data should not be
         silently invented; handle gaps explicitly upstream
         (re-run ingestion for that window) if they matter for your
@@ -203,24 +263,38 @@ class QualityChecker:
         if missing_value_strategy not in ("mean", "zero", "drop"):
             raise ValueError(f"Unknown missing_value_strategy: {missing_value_strategy}")
 
+        missing_key_columns = [
+            column for column in self.key_cols if column not in df.columns
+        ]
+        if missing_key_columns:
+            raise ValueError(
+                f"Cannot clean dataset; missing key columns: {missing_key_columns}"
+            )
+
         df = df.copy()
         before = len(df)
         df = df.drop_duplicates(subset=list(self.key_cols), keep="last")
 
-        numeric_cols = df.select_dtypes(include="number").columns
+        logger.info(
+            "Deferring '%s' missing-value handling to train-fitted preprocessing.",
+            missing_value_strategy,
+        )
 
-        if missing_value_strategy == "mean":
-            df[numeric_cols] = df[numeric_cols].fillna(df[numeric_cols].mean())
-        elif missing_value_strategy == "zero":
-            df[numeric_cols] = df[numeric_cols].fillna(0.0)
-        else:  # "drop"
-            df = df.dropna(subset=list(numeric_cols))
+        for column in ("pm25", "pm10", "no2", "so2", "co", "o3"):
+            if column in df.columns:
+                numeric = pd.to_numeric(df[column], errors="coerce")
+                df.loc[numeric < 0, column] = pd.NA
+
+        if "aqi" in df.columns:
+            aqi = pd.to_numeric(df["aqi"], errors="coerce")
+            df.loc[(aqi < 0) | (aqi > 500), "aqi"] = pd.NA
 
         df = df.sort_values(list(self.key_cols)).reset_index(drop=True)
 
         logger.info(
-            "Cleaned dataset: %d -> %d row(s) (dedup + '%s' missing-value strategy).",
-            before, len(df), missing_value_strategy,
+            "Cleaned dataset: %d -> %d row(s) (dedup + invalid-domain normalization; imputation deferred).",
+            before,
+            len(df),
         )
 
         return df

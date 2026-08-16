@@ -1,16 +1,3 @@
-"""
-rolling_features.py
-===================
-Suggested path: src/feature_engineering/rolling_features.py
-
-Phase 3, Part 3 — Rolling Window Features.
-
-SINGLE RESPONSIBILITY: compute rolling statistics (moving average,
-std, min, max, median, EMA) over time windows. Captures short-term
-trends and volatility in AQI, pollutants, and weather variables.
-
-Memory-optimized version with float32 downcasting to prevent OOM errors.
-"""
 
 from __future__ import annotations
 
@@ -276,4 +263,4 @@ class RollingFeatureEngineer:
             "Rolling features added: %d new column(s) (%d -> %d).",
             after_cols - before_cols, before_cols, after_cols,
         )
-        return df
+        return df   
